@@ -4,6 +4,7 @@ opteePath="$sdkRoot/optee_os"
 
 build_optee() {
 	local cc tee_raw
+	opentina_optee_enabled || error "OP-TEE is disabled (OPENTINA_OPTEE=0). Enable with --optee or OPENTINA_OPTEE=1."
 	cc=$(opentina_cross_compile) || error "Set OPENTINA_CROSS_COMPILE or install gcc-aarch64-linux-gnu."
 
 	[ -d "$opteePath" ] || error "Missing OP-TEE tree: $opteePath (./build.sh init)"
@@ -30,19 +31,31 @@ clean_optee() {
 atfPath="$sdkRoot/trusted-firmware-a"
 
 build_atf() {
-	local cc
+	local cc spd
 	cc=$(opentina_cross_compile) || error "Set OPENTINA_CROSS_COMPILE or install gcc-aarch64-linux-gnu (see build2/scripts/build-sdcard-image.sh)."
 
 	cd "$atfPath"
 
-	# SPD=opteed + BL32_BASE: BL31 hands off to preloaded OP-TEE at DRAM base
-	# then BL33. TF-A incremental builds do not rebuild plat objects when SPD=
-	# changes, so a leftover sunxi_bl31_setup.o from SPD=none keeps
+	if opentina_optee_enabled; then
+		# SPD=opteed: BL31 hands off to preloaded BL32 (OP-TEE at DRAM base) then BL33.
+		spd=opteed
+	else
+		# No BL32: BL31 returns directly to BL33 (U-Boot).
+		spd=none
+	fi
+	# Always clean: TF-A incremental make does not rebuild plat objects when
+	# only SPD= changes. A leftover sunxi_bl31_setup.o from SPD=none keeps
 	# bl32_image_ep_info.pc == 0 while still linking opteed →
-	# "Error initializing runtime service opteed_fast". Always clean first.
-	make PLAT=sun60i_a733 CROSS_COMPILE="$cc" clean
-	make PLAT=sun60i_a733 SPD=opteed BL32_BASE=0x40000000 CROSS_COMPILE="$cc" all \
-		|| error "ATF build failed"
+	# "Error initializing runtime service opteed_fast".
+	make PLAT=sun60i_a733 CROSS_COMPILE="$cc" clean || true
+	if [ "$spd" = opteed ]; then
+		make PLAT=sun60i_a733 SPD=opteed BL32_BASE=0x40000000 CROSS_COMPILE="$cc" all \
+			|| error "ATF build failed"
+	else
+		make PLAT=sun60i_a733 SPD=none CROSS_COMPILE="$cc" all \
+			|| error "ATF build failed"
+	fi
+	printf '%s\n' "$spd" >"${outDir%/}/.atf-spd"
 }
 
 clean_atf() {
@@ -51,31 +64,43 @@ clean_atf() {
 	cd "$atfPath"
 
 	make PLAT=sun60i_a733 CROSS_COMPILE="$cc" clean
+	rm -f "${outDir%/}/.atf-spd"
 }
 
 ubootPath="$sdkRoot/u-boot"
 build_uboot() {
 	requires "atf"
-	requires "optee"
 
 	local cc bl31 tee
+	local -a tee_make=()
 	cc=$(opentina_cross_compile) || error "Set OPENTINA_CROSS_COMPILE or install gcc-aarch64-linux-gnu."
 	bl31="$sdkRoot/trusted-firmware-a/build/sun60i_a733/release/bl31.bin"
-	tee="$outDir/tee.bin"
 	[ -f "$bl31" ] || error "Missing BL31: $bl31 (build atf first)"
-	[ -f "$tee" ] || error "Missing TEE: $tee (build optee first)"
+
+	if opentina_optee_enabled; then
+		requires "optee"
+		tee="$outDir/tee.bin"
+		[ -f "$tee" ] || error "Missing TEE: $tee (build optee first)"
+		tee_make=(TEE="$tee")
+	fi
 
 	cd "$ubootPath"
 
 	# Match build2: same CROSS_COMPILE as TF-A/Linux; disable host-only mkeficapsule (gnutls).
 	# TEE= is consumed by binman (-a tee-os-path) and packed into the SPL FIT as BL32.
-	make CROSS_COMPILE="$cc" BL31="$bl31" TEE="$tee" "$UBOOT_CONFIG" || error "U-Boot defconfig failed"
+	make CROSS_COMPILE="$cc" BL31="$bl31" "${tee_make[@]}" "$UBOOT_CONFIG" || error "U-Boot defconfig failed"
 	"$ubootPath/scripts/config" --file "$ubootPath/.config" --disable TOOLS_MKEFICAPSULE
 	# SPL FIT (BL31+OP-TEE+U-Boot) is >1MiB; keep simple heap large enough.
 	"$ubootPath/scripts/config" --file "$ubootPath/.config" \
 		--set-val SPL_STACK_R_MALLOC_SIMPLE_LEN 0x200000
-	make CROSS_COMPILE="$cc" BL31="$bl31" TEE="$tee" olddefconfig >/dev/null || error "U-Boot olddefconfig failed"
-	make CROSS_COMPILE="$cc" BL31="$bl31" TEE="$tee" || error "U-Boot build failed"
+	if ! opentina_optee_enabled; then
+		# Prompted symbol: hidden SUNXI_BL32_BASE is 0 when this is n, so
+		# sunxi-u-boot.dtsi drops the tee FIT node. Do not --set-val the
+		# hex address — olddefconfig would restore the A733 default.
+		"$ubootPath/scripts/config" --file "$ubootPath/.config" --disable SUNXI_BL32
+	fi
+	make CROSS_COMPILE="$cc" BL31="$bl31" "${tee_make[@]}" olddefconfig >/dev/null || error "U-Boot olddefconfig failed"
+	make CROSS_COMPILE="$cc" BL31="$bl31" "${tee_make[@]}" || error "U-Boot build failed"
 
 	[ -f "$ubootPath/u-boot-sunxi-with-spl.bin" ] || error "Missing $ubootPath/u-boot-sunxi-with-spl.bin"
 	[ -f "$ubootPath/u-boot-sunxi-with-spl.fit.fit" ] || error "Missing $ubootPath/u-boot-sunxi-with-spl.fit.fit"
@@ -98,6 +123,36 @@ clean_uboot() {
 }
 
 linuxPath="$sdkRoot/linux"
+
+# Recompile $FDT_NAME without OP-TEE TZDRAM/SHM / firmware nodes. Overlay
+# /delete-node/ is unreliable; a full dts with phandle deletes is not.
+_linux_dtb_drop_optee() {
+	local dtb="$1"
+	local dtsdir="$linuxPath/arch/arm64/boot/dts/allwinner"
+	local src="${FDT_NAME%.dtb}.dts"
+	local wrap="$dtsdir/.opentina-no-optee.dts"
+	local dtc inc
+	[ -f "$dtsdir/$src" ] || error "Missing board DTS: $dtsdir/$src"
+	dtc="$linuxPath/scripts/dtc/dtc"
+	[ -x "$dtc" ] || dtc="$(command -v dtc)" || error "dtc not found"
+	inc="$linuxPath/scripts/dtc/include-prefixes"
+	cat >"$wrap" <<EOF
+#include "$src"
+/delete-node/ &optee;
+/delete-node/ &optee_core;
+/delete-node/ &optee_shm;
+EOF
+	gcc -E -nostdinc -undef -D__DTS__ -x assembler-with-cpp \
+		-I "$inc" -I "$dtsdir" -I "$linuxPath/include" \
+		-o "${wrap}.pp" "$wrap" \
+		|| error "Failed to preprocess no-OP-TEE DTS"
+	"$dtc" -I dts -O dtb -Wno-unit_address_vs_reg -Wno-simple_bus_reg \
+		-Wno-unique_unit_address -o "$dtb" "${wrap}.pp" \
+		|| error "Failed to compile DTB without OP-TEE reserved-memory"
+	rm -f "$wrap" "${wrap}.pp"
+	echo "DTB: removed OP-TEE reserved-memory / firmware from $dtb"
+}
+
 build_linux() {
 	local cc
 	cc=$(opentina_cross_compile) || error "Set OPENTINA_CROSS_COMPILE or install gcc-aarch64-linux-gnu."
@@ -108,9 +163,11 @@ build_linux() {
 	make ARCH=arm64 CROSS_COMPILE="$cc" "$LINUX_CONFIG" || error "Linux defconfig failed"
 
 	local kfrags=()
-	local opteefrag="${LINUX_OPTEE_FRAGMENT:-$OPENTINA_BUILD_ROOT/configs/common/linux-optee.fragment}"
-	[ -f "$opteefrag" ] || error "Missing kernel fragment for OP-TEE: $opteefrag"
-	kfrags+=("$opteefrag")
+	if opentina_optee_enabled; then
+		local opteefrag="${LINUX_OPTEE_FRAGMENT:-$OPENTINA_BUILD_ROOT/configs/common/linux-optee.fragment}"
+		[ -f "$opteefrag" ] || error "Missing kernel fragment for OP-TEE: $opteefrag"
+		kfrags+=("$opteefrag")
+	fi
 
 	case "${OPENTINA_ROOTFS:-buildroot}" in
 	ubuntu | debian | yocto)
@@ -128,14 +185,19 @@ build_linux() {
 		;;
 	esac
 
-	echo "Merging ${kfrags[*]} (OPENTINA_ROOTFS=${OPENTINA_ROOTFS:-buildroot})"
-	./scripts/kconfig/merge_config.sh -m -r -O . .config "${kfrags[@]}" || error "merge_config.sh failed"
-	make ARCH=arm64 CROSS_COMPILE="$cc" olddefconfig || error "Linux olddefconfig failed"
+	if [ "${#kfrags[@]}" -gt 0 ]; then
+		echo "Merging ${kfrags[*]} (OPENTINA_ROOTFS=${OPENTINA_ROOTFS:-buildroot} OPENTINA_OPTEE=${OPENTINA_OPTEE:-1})"
+		./scripts/kconfig/merge_config.sh -m -r -O . .config "${kfrags[@]}" || error "merge_config.sh failed"
+		make ARCH=arm64 CROSS_COMPILE="$cc" olddefconfig || error "Linux olddefconfig failed"
+	fi
 
 	make ARCH=arm64 CROSS_COMPILE="$cc" || error "Linux build failed"
 
 	cp "$linuxPath"/arch/arm64/boot/Image.gz "$outDir"
 	cp "$linuxPath"/arch/arm64/boot/dts/allwinner/"$FDT_NAME" "$outDir"
+	if ! opentina_optee_enabled; then
+		_linux_dtb_drop_optee "$outDir/$FDT_NAME"
+	fi
 
 	# Install all built modules (*.ko) for rootfs
 	local mod_root="$outDir/modules-root"
@@ -193,10 +255,46 @@ _install_linux_modules_into_out_rootfs() {
 
 # Buildroot rootfs (br2 component — not the same as OPENTINA_ROOTFS=buildroot CLI token).
 buildrootPath="$sdkRoot/buildroot"
+
+# Remove OP-TEE userspace left in TARGET_DIR after disabling BR2_PACKAGE_OPTEE_*.
+# Do not delete /usr/bin/tee (coreutils).
+_br2_purge_optee_userspace() {
+	local t="$buildrootPath/output/target"
+	[ -d "$t" ] || return 0
+	rm -f "$t/etc/init.d/S30tee-supplicant" \
+		"$t/usr/sbin/tee-supplicant" \
+		"$t/usr/bin/xtest"
+	rm -f "$t"/usr/bin/optee_example_*
+	rm -f "$t"/usr/lib/libteec.so* "$t"/usr/lib/libckteec.so* "$t"/usr/lib/libseteec.so*
+	rm -f "$t"/usr/lib/systemd/system/tee-supplicant@.service
+	rm -f "$t"/usr/etc/udev/rules.d/*optee* "$t"/etc/udev/rules.d/*optee*
+	rm -rf "$t/usr/lib/tee-supplicant" "$t/lib/optee_armtz" "$t/data/tee"
+	echo "Buildroot: purged leftover OP-TEE userspace from $t"
+}
+
+# Incremental `make` skips packages that still have .stamp_target_installed
+# after we deleted their files for --no-optee. Drop those stamps so the next
+# make copies tee-supplicant / xtest / examples back into TARGET_DIR.
+_br2_force_optee_userspace_reinstall() {
+	local d
+	shopt -s nullglob
+	for d in "$buildrootPath"/output/build/optee-client-* \
+		"$buildrootPath"/output/build/optee-test-* \
+		"$buildrootPath"/output/build/optee-examples-*; do
+		rm -f "$d/.stamp_target_installed" \
+			"$d/.stamp_staging_installed" \
+			"$d/.stamp_installed"
+	done
+	shopt -u nullglob
+	echo "Buildroot: cleared OP-TEE userspace install stamps (will reinstall)"
+}
+
 build_br2() {
 	[ -n "${BUILDROOT_DEFCONFIG:-}" ] || error "BUILDROOT_DEFCONFIG is not set in board config."
 	local br2_cfg="$OPENTINA_BUILD_ROOT/configs/$boardConfigDir/$BUILDROOT_DEFCONFIG"
 	[ -f "$br2_cfg" ] || error "Missing Buildroot defconfig: $br2_cfg"
+	local br2_optee_stamp="${outDir%/}/.br2-optee"
+	local t="$buildrootPath/output/target"
 
 	cd "$buildrootPath"
 	# Drop a leftover BR2_EXTERNAL from older builds (configs/br2-external).
@@ -207,19 +305,40 @@ build_br2() {
 
 	_linux_modules_warn_if_missing "Buildroot rootfs"
 
-	# TAs + TA SDK from the OpenTina optee component (not BR2_TARGET_OPTEE_OS).
-	export OPENTINA_OPTEE_EXPORT="${outDir%/}/optee"
-	if [ ! -f "$OPENTINA_OPTEE_EXPORT/export-ta_arm64/mk/ta_dev_kit.mk" ] &&
-		[ ! -f "$OPENTINA_OPTEE_EXPORT/export-ta_arm32/mk/ta_dev_kit.mk" ]; then
-		error "xtest/optee-examples need the OP-TEE TA devkit; build optee first (./build.sh $boardName build optee)"
-	fi
-	# TA signing (sign_encrypt.py) needs distro python3-cryptography, not conda.
-	if ! /usr/bin/python3 -c "import cryptography" >/dev/null 2>&1; then
-		error "Missing python3 cryptography module. Install: sudo apt install python3-cryptography"
-	fi
-	if ! compgen -G "$OPENTINA_OPTEE_EXPORT/export-ta_*/ta/*.ta" >/dev/null 2>&1 &&
-		! compgen -G "$OPENTINA_OPTEE_EXPORT/ta/*/*.ta" >/dev/null 2>&1; then
-		yellow_msg "No in-tree OP-TEE TAs under $OPENTINA_OPTEE_EXPORT"
+	if opentina_optee_enabled; then
+		# TAs + TA SDK from the OpenTina optee component (not BR2_TARGET_OPTEE_OS).
+		export OPENTINA_OPTEE_EXPORT="${outDir%/}/optee"
+		if [ ! -f "$OPENTINA_OPTEE_EXPORT/export-ta_arm64/mk/ta_dev_kit.mk" ] &&
+			[ ! -f "$OPENTINA_OPTEE_EXPORT/export-ta_arm32/mk/ta_dev_kit.mk" ]; then
+			error "xtest/optee-examples need the OP-TEE TA devkit; build optee first (./build.sh $boardName build optee)"
+		fi
+		# TA signing (sign_encrypt.py) needs distro python3-cryptography, not conda.
+		if ! /usr/bin/python3 -c "import cryptography" >/dev/null 2>&1; then
+			error "Missing python3 cryptography module. Install: sudo apt install python3-cryptography"
+		fi
+		if ! compgen -G "$OPENTINA_OPTEE_EXPORT/export-ta_*/ta/*.ta" >/dev/null 2>&1; then
+			yellow_msg "No exported OP-TEE TAs under $OPENTINA_OPTEE_EXPORT"
+		fi
+		# After --no-optee the files are gone but stamps remain; force install.
+		if [ ! -f "$t/etc/init.d/S30tee-supplicant" ] ||
+			[ ! -x "$t/usr/sbin/tee-supplicant" ] ||
+			{ [ -f "$br2_optee_stamp" ] && [ "$(cat "$br2_optee_stamp")" = "0" ]; }; then
+			_br2_force_optee_userspace_reinstall
+		fi
+	else
+		# Board defconfig enables OP-TEE userspace; drop it when OP-TEE is off.
+		local br_cfgtool="$buildrootPath/utils/config"
+		[ -x "$br_cfgtool" ] || error "Missing Buildroot utils/config: $br_cfgtool"
+		"$br_cfgtool" --file "$buildrootPath/.config" \
+			--disable BR2_PACKAGE_OPTEE_CLIENT \
+			--disable BR2_PACKAGE_OPTEE_TEST \
+			--disable BR2_PACKAGE_OPTEE_EXAMPLES \
+			--set-str BR2_ROOTFS_USERS_TABLES "" \
+			|| error "Failed to disable Buildroot OP-TEE packages"
+		make BR2_EXTERNAL= olddefconfig || error "Buildroot olddefconfig failed"
+		# Incremental `make` does not uninstall disabled packages; leftover
+		# S30tee-supplicant still starts and talks to /dev/teepriv0.
+		_br2_purge_optee_userspace
 	fi
 
 	# PowerVR firmware for request_firmware() → /lib/firmware/powervr/.
@@ -227,6 +346,14 @@ build_br2() {
 	_fetch_powervr_firmware
 
 	make BR2_EXTERNAL= || error "Buildroot make failed"
+
+	if opentina_optee_enabled; then
+		[ -f "$t/etc/init.d/S30tee-supplicant" ] && [ -x "$t/usr/sbin/tee-supplicant" ] \
+			|| error "OP-TEE is enabled but tee-supplicant is missing from Buildroot TARGET_DIR; rebuild br2"
+		printf '1\n' >"$br2_optee_stamp"
+	else
+		printf '0\n' >"$br2_optee_stamp"
+	fi
 
 	local img="$buildrootPath/output/images/rootfs.ext2"
 	[ -f "$img" ] || error "Expected $img after Buildroot build (check BR2_TARGET_ROOTFS_EXT2)."
@@ -238,7 +365,7 @@ clean_br2() {
 	if [ -f .config ]; then
 		make BR2_EXTERNAL= clean
 	fi
-	rm -f "$outDir/rootfs.ext2"
+	rm -f "$outDir/rootfs.ext2" "${outDir%/}/.br2-optee"
 }
 
 # Pick the OEM dir forwarded to the buildx wrapper, then export
@@ -580,7 +707,8 @@ build_openwrt() {
 	#
 	# $1=rootfs_tar $2=stage $3=rootfs.ext2 $4=size $5=mod_staging
 	# $6=fw_script $7=ta_script $8=optee_export $9=overlay_script
-	local mkimg='tar -xpf "$1" -C "$2" && rm -rf "$2/lib/modules" && if [ -d "$5/lib/modules" ]; then mkdir -p "$2/lib/modules" && cp -a "$5/lib/modules/." "$2/lib/modules/" && chown -R 0:0 "$2/lib/modules"; fi && "$6" "$2" && OPENTINA_OPTEE_EXPORT="$8" bash "$7" "$2" && bash "$9" "$2" && mkfs.ext4 -d "$2" -L rootfs -m 0 -F "$3" "$4" >/dev/null'
+	# install-optee-ta.sh no-ops when OPENTINA_OPTEE=0.
+	local mkimg='tar -xpf "$1" -C "$2" && rm -rf "$2/lib/modules" && if [ -d "$5/lib/modules" ]; then mkdir -p "$2/lib/modules" && cp -a "$5/lib/modules/." "$2/lib/modules/" && chown -R 0:0 "$2/lib/modules"; fi && "$6" "$2" && OPENTINA_OPTEE="${OPENTINA_OPTEE:-1}" OPENTINA_OPTEE_EXPORT="$8" bash "$7" "$2" && bash "$9" "$2" && mkfs.ext4 -d "$2" -L rootfs -m 0 -F "$3" "$4" >/dev/null'
 	echo "Packing OpenWrt rootfs: $rootfs_tar -> $outDir/rootfs.ext2 (${mb}M)"
 	if command -v mkfs.ext4 >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
 		sh -c "$mkimg" mkimg "$rootfs_tar" "$stage" "$outDir/rootfs.ext2" "${mb}M" "$mod_staging" "$fw_script" "$ta_script" "$optee_export" "$ow_overlay" \
@@ -593,7 +721,7 @@ build_openwrt() {
 		local docker_mod_vol=()
 		local docker_mod_copy=':'
 		local docker_optee_vol=()
-		local docker_optee_env=(-e OPENTINA_OPTEE_EXPORT=)
+		local docker_optee_env=(-e OPENTINA_OPTEE_EXPORT= -e OPENTINA_OPTEE="${OPENTINA_OPTEE:-1}")
 		docker image inspect "$img" >/dev/null 2>&1 \
 			|| docker build -t "$img" -f "$OPENTINA_BUILD_ROOT/docker/Dockerfile" "$OPENTINA_BUILD_ROOT/docker" \
 			|| error "failed to build $img"
@@ -601,9 +729,9 @@ build_openwrt() {
 			docker_mod_vol=(-v "$mod_staging:/staging:ro")
 			docker_mod_copy='mkdir -p /stage/lib/modules && cp -a /staging/lib/modules/. /stage/lib/modules/ && chown -R 0:0 /stage/lib/modules'
 		fi
-		if [ -d "$optee_export" ]; then
+		if opentina_optee_enabled && [ -d "$optee_export" ]; then
 			docker_optee_vol=(-v "$optee_export:/optee:ro")
-			docker_optee_env=(-e OPENTINA_OPTEE_EXPORT=/optee)
+			docker_optee_env=(-e OPENTINA_OPTEE_EXPORT=/optee -e OPENTINA_OPTEE=1)
 		fi
 		docker run --rm \
 			-e OPENTINA_FIRMWARE_CACHE=/fwcache \

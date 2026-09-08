@@ -5,6 +5,16 @@
 # Declared root filesystem types (extend when implementing).
 opentina_rootfs_types=(buildroot debian ubuntu yocto openwrt)
 
+# OP-TEE is optional for the whole project (BL32, kernel driver, TAs, userspace).
+# Resolution: CLI --optee/--no-optee or env OPENTINA_OPTEE, then board
+#   OPENTINA_OPTEE="${OPENTINA_OPTEE:-1}", default on.
+opentina_optee_enabled() {
+	case "${OPENTINA_OPTEE:-1}" in
+	1 | y | Y | yes | YES | on | ON) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
 opentina_rootfs_is_known() {
 	local t="$1"
 	for x in "${opentina_rootfs_types[@]}"; do
@@ -57,6 +67,11 @@ opentina_list_targets() {
 	echo "  ubuntu      (sources/ubuntu → output/<BOARD>/rootfs.ext2)"
 	echo "  yocto       (sources/meta-opentina → output/<BOARD>/rootfs.ext2)"
 	echo "  openwrt     (sources/openwrt → output/<BOARD>/rootfs.ext2)"
+	echo
+	blue_msg "OP-TEE (optional, default on):"
+	echo "  ./build.sh --optee <BOARD> build     # BL32 + kernel driver + TAs"
+	echo "  ./build.sh --no-optee <BOARD> build  # ATF SPD=none, no BL32 / TAs"
+	echo "  OPENTINA_OPTEE=0 ./build.sh <BOARD> build"
 }
 
 # Toolchain: same approach as build2/scripts/build-sdcard-image.sh — one AArch64

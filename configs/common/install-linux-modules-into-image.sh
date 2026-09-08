@@ -20,6 +20,8 @@ OUT_DIR="$(cd "$(dirname -- "$IMAGE")" && pwd)"
 MNT="$OUT_DIR/.modules-overlay-mnt"
 STAGE="$OUT_DIR/.rootfs-modules-stage"
 
+export OPENTINA_OPTEE="${OPENTINA_OPTEE:-1}"
+
 OPTEE_EXPORT="${OPENTINA_OPTEE_EXPORT:-}"
 if [ -z "$OPTEE_EXPORT" ] || [ ! -d "$OPTEE_EXPORT" ]; then
 	if [ -n "${outDir:-}" ] && [ -d "${outDir%/}/optee" ]; then
@@ -70,7 +72,8 @@ overlay_loop_sudo() {
 		sudo umount "$MNT" || true
 		return 1
 	fi
-	if ! sudo env OPENTINA_OPTEE_EXPORT="$OPTEE_EXPORT" bash "$INSTALL_TA" "$MNT"; then
+	if ! sudo env OPENTINA_OPTEE="${OPENTINA_OPTEE:-1}" \
+		OPENTINA_OPTEE_EXPORT="$OPTEE_EXPORT" bash "$INSTALL_TA" "$MNT"; then
 		sudo umount "$MNT" || true
 		return 1
 	fi
@@ -142,10 +145,10 @@ overlay_docker() {
 	[ -d "$STAGING" ] && staging_vol=(-v "$STAGING:/staging:ro")
 
 	local optee_vol=()
-	local optee_env=(-e OPENTINA_OPTEE_EXPORT=)
-	if [ -n "$OPTEE_EXPORT" ] && [ -d "$OPTEE_EXPORT" ]; then
+	local optee_env=(-e OPENTINA_OPTEE="${OPENTINA_OPTEE:-1}" -e OPENTINA_OPTEE_EXPORT=)
+	if [ "${OPENTINA_OPTEE:-1}" != "0" ] && [ -n "$OPTEE_EXPORT" ] && [ -d "$OPTEE_EXPORT" ]; then
 		optee_vol=(-v "$OPTEE_EXPORT:/optee:ro")
-		optee_env=(-e OPENTINA_OPTEE_EXPORT=/optee)
+		optee_env=(-e OPENTINA_OPTEE=1 -e OPENTINA_OPTEE_EXPORT=/optee)
 	fi
 
 	docker run --rm --privileged \
