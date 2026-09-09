@@ -330,6 +330,30 @@ export OPENTINA_DOCKER=1
 
 ---
 
+## GitHub Actions（CI 镜像）
+
+工作流 [`.github/workflows/images.yml`](.github/workflows/images.yml)：
+
+| 触发 | 行为 |
+|------|------|
+| **pull request → `tina-dev`** | 跑完整板子 × rootfs × OP-TEE 矩阵作为 CI 检查；产物在该次 run 的 Artifacts（保留 14 天），**不**发 Release |
+| **push 新 tag** | 同样矩阵，成功项打成 `xz` 后发布同名 **GitHub Release** |
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Release 页文件名例如 `demo_aiot_a733_v3-buildroot-optee-sdcard.img.xz`（单附件上限约 2 GiB）。解压：`xz -d <file>-sdcard.img.xz`。
+
+默认矩阵：`demo_aiot_a733_v3`、`radxa_a7a` × `buildroot`、`ubuntu`、`debian`、`openwrt`、`yocto` × **`optee`**、**`no-optee`**。某组失败不影响其它组；tag Release 会挂上**已成功**的镜像。Yocto / OpenWrt 的 job timeout 分别为 360 / 240 分钟。
+
+CI 在 **Ubuntu 24.04 runner** 上装与 `docker/Dockerfile` 对齐的宿主依赖（`scripts/ci-install-deps.sh`），**不**再套一层 `./build.sh --docker`，以便 Ubuntu/Debian rootfs 走宿主机 Docker buildx。Yocto job 会放开 `kernel.apparmor_restrict_unprivileged_userns`。
+
+`./build.sh init` 要拉 `opentina-org` 下的 linux / u-boot 等仓。若这些仓是**私有**的，在仓库 Secrets 里加 **`OPENTINA_GH_TOKEN`**（能读对应 project 的 PAT）；公开仓用默认 `GITHUB_TOKEN` 即可。
+
+---
+
 ## 获取帮助
 
 ```bash

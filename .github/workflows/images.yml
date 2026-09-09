@@ -1,0 +1,198 @@
+# SPDX-License-Identifier: MIT
+# PR: build-check the image matrix. Tag push: same builds + GitHub Release.
+name: Images
+
+on:
+  pull_request:
+    branches:
+      - tina-dev
+  push:
+    tags:
+      - "*"
+
+concurrency:
+  group: images-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - id: gen
+        run: |
+          python3 <<'PY'
+          import json, os
+          boards = ["demo_aiot_a733_v3", "radxa_a7a"]
+          rootfs = ["buildroot", "ubuntu", "debian", "openwrt", "yocto"]
+          tees = ["optee", "no-optee"]
+          timeouts = {
+              "buildroot": 180,
+              "ubuntu": 120,
+              "debian": 120,
+              "openwrt": 240,
+              "yocto": 360,
+          }
+          flags = {"optee": "--optee", "no-optee": "--no-optee"}
+          include = [
+              {
+                  "board": board,
+                  "rootfs": fs,
+                  "tee": tee,
+                  "tee_flag": flags[tee],
+                  "timeout": timeouts[fs],
+              }
+              for board in boards
+              for fs in rootfs
+              for tee in tees
+          ]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("matrix=" + json.dumps({"include": include}) + "\n")
+          print("matrix include:", json.dumps(include, indent=2))
+          PY
+
+  images:
+    name: ${{ matrix.board }} / ${{ matrix.rootfs }} / ${{ matrix.tee }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: GitHub clone credentials
+        env:
+          OPENTINA_GH_TOKEN: ${{ secrets.OPENTINA_GH_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          token="${OPENTINA_GH_TOKEN:-$GITHUB_TOKEN}"
+          git config --global url."https://x-access-token:${token}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install host packages
+        run: ./scripts/ci-install-deps.sh
+
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.board }}-${{ matrix.rootfs }}-${{ matrix.tee }}-${{ runner.os }}
+          restore-keys: |
+            ${{ matrix.board }}-${{ matrix.rootfs }}-${{ matrix.tee }}-${{ runner.os }}
+            ${{ matrix.board }}-${{ matrix.rootfs }}-${{ runner.os }}
+            ${{ matrix.board }}-${{ runner.os }}
+          max-size: 2G
+
+      - name: Allow unprivileged user namespaces (Yocto)
+        if: matrix.rootfs == 'yocto'
+        run: |
+          echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/99-bitbake-userns.conf
+          sudo sysctl -p /etc/sysctl.d/99-bitbake-userns.conf
+
+      - name: Clone sources
+        run: ./build.sh init
+
+      - name: Build ${{ matrix.board }} ${{ matrix.rootfs }} ${{ matrix.tee }}
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: |
+          export PATH="/usr/lib/ccache:${PATH}"
+          ./build.sh ${{ matrix.tee_flag }} "${{ matrix.board }}" "${{ matrix.rootfs }}" build
+          printf '%s\n' "${{ matrix.tee }}" > "output/${{ matrix.board }}/OPTEE.txt"
+
+      - name: Checksums
+        run: |
+          out="output/${{ matrix.board }}"
+          test -f "$out/sdcard.img"
+          (
+            cd "$out"
+            echo "tee=${{ matrix.tee }}"
+            sha256sum sdcard.img
+            for f in u-boot.fex Image.gz rootfs.ext2 tee.bin *.dtb OPTEE.txt; do
+              [ -e "$f" ] || continue
+              sha256sum "$f"
+            done
+          ) | tee "$out/SHA256SUMS"
+          ls -lh "$out/sdcard.img"
+
+      - name: Stage artifact
+        run: |
+          src="output/${{ matrix.board }}"
+          dst="${{ runner.temp }}/image-artifact"
+          mkdir -p "$dst"
+          cp -a "$src/sdcard.img" "$src/SHA256SUMS" "$src/OPTEE.txt" \
+            "$src/u-boot.fex" "$src/Image.gz" "$dst/"
+          cp -a "$src"/*.dtb "$dst/"
+          if [ "${{ matrix.tee }}" = optee ]; then
+            cp -a "$src/tee.bin" "$dst/"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.board }}-${{ matrix.rootfs }}-${{ matrix.tee }}
+          path: ${{ runner.temp }}/image-artifact/
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 14
+
+  release:
+    name: GitHub Release ${{ github.ref_name }}
+    needs: images
+    if: ${{ always() && !cancelled() && startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Pack release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          shopt -s nullglob
+          for dir in artifacts/*/; do
+            name="$(basename "$dir")"
+            img="$dir/sdcard.img"
+            [ -f "$img" ] || continue
+            echo "xz $name sdcard.img"
+            xz -T0 -c "$img" > "release/${name}-sdcard.img.xz"
+            cp -a "$dir/SHA256SUMS" "release/${name}-SHA256SUMS.txt"
+            cp -a "$dir/OPTEE.txt" "release/${name}-OPTEE.txt"
+          done
+          [ -n "$(ls -A release 2>/dev/null)" ] || {
+            echo "no image artifacts to publish" >&2
+            exit 1
+          }
+          (cd release && sha256sum *-sdcard.img.xz *-SHA256SUMS.txt *-OPTEE.txt > SHA256SUMS)
+          ls -lh release
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          notes="$(printf 'OpenTina images for tag `%s`.\n\nEach `*-sdcard.img.xz` is one board × rootfs × OP-TEE image. Decompress with `xz -d` then `dd` to the SD card.\n' "$tag")"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" release/* --clobber
+          else
+            gh release create "$tag" release/* \
+              --title "$tag" \
+              --notes "$notes"
+          fi
