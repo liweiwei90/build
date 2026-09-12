@@ -13,10 +13,14 @@ CONFIG_UNIX=y
 CONFIG_PACKET=y
 CONFIG_IPV6=y
 
-# USB ethernet dongles provide a controlled network test path without enabling
-# the unfinished on-board GMAC. Keep these built in because OpenWrt modules are
-# built against a different kernel and are removed from the assembled rootfs.
+# A733 GMAC (RTL8211F on DEMO AIOT). Must be builtin: OpenWrt kmods are discarded.
+# sun55i VLAN filter register can timeout (8021q VID 0); netifd still uses eth0.
 CONFIG_NETDEVICES=y
+CONFIG_STMMAC_ETH=y
+CONFIG_DWMAC_SUN55I=y
+CONFIG_REALTEK_PHY=y
+
+# USB ethernet dongles as a fallback if the board has no PHY / no cable.
 CONFIG_USB_USBNET=y
 CONFIG_USB_NET_AX88179_178A=y
 CONFIG_USB_RTL8152=y

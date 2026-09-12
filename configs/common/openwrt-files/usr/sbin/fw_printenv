@@ -1,0 +1,5 @@
+#!/bin/sh
+# OpenTina: no U-Boot env device and no NVMEM u-boot,env cell on this layout.
+# Upstream fw_printenv then prints "Failed to find NVMEM device" during preinit.
+# Stay silent; callers already treat a missing ethaddr as "use a random MAC".
+exit 1
