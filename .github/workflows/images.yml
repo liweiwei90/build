@@ -1,14 +1,29 @@
 # SPDX-License-Identifier: MIT
-# PR: build-check the image matrix. Tag push: same builds + GitHub Release.
+# PR: 7-job subset (demo × 5 rootfs/optee + demo buildroot/no-optee + a7a buildroot/optee).
+# Tag / workflow_dispatch(full): complete board × rootfs × TEE matrix.
+# Tag push: GitHub Release. Incomplete matrix is published as prerelease with a missing list.
 name: Images
 
 on:
   pull_request:
     branches:
       - tina-dev
+    paths-ignore:
+      - "**/*.md"
+      - LICENSE
+      - .gitignore
   push:
     tags:
       - "*"
+  workflow_dispatch:
+    inputs:
+      matrix:
+        description: Image matrix (pr = 7-job PR subset)
+        type: choice
+        options:
+          - pr
+          - full
+        default: full
 
 concurrency:
   group: images-${{ github.event.pull_request.number || github.ref }}
@@ -25,11 +40,15 @@ jobs:
       matrix: ${{ steps.gen.outputs.matrix }}
     steps:
       - id: gen
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MATRIX_SCOPE: ${{ github.event.inputs.matrix || '' }}
         run: |
           python3 <<'PY'
           import json, os
+
           boards = ["demo_aiot_a733_v3", "radxa_a7a"]
-          rootfs = ["buildroot", "ubuntu", "debian", "openwrt", "yocto"]
+          full_rootfs = ["buildroot", "ubuntu", "debian", "openwrt", "yocto"]
           tees = ["optee", "no-optee"]
           timeouts = {
               "buildroot": 180,
@@ -39,20 +58,52 @@ jobs:
               "yocto": 360,
           }
           flags = {"optee": "--optee", "no-optee": "--no-optee"}
-          include = [
-              {
-                  "board": board,
-                  "rootfs": fs,
-                  "tee": tee,
-                  "tee_flag": flags[tee],
-                  "timeout": timeouts[fs],
-              }
+
+          event = os.environ.get("EVENT_NAME", "")
+          scope = os.environ.get("MATRIX_SCOPE", "").strip()
+
+          def rows(pairs):
+              return [
+                  {
+                      "board": board,
+                      "rootfs": fs,
+                      "tee": tee,
+                      "tee_flag": flags[tee],
+                      "timeout": timeouts[fs],
+                  }
+                  for board, fs, tee in pairs
+              ]
+
+          # PR: demo × all rootfs/optee, plus demo buildroot/no-optee and a7a buildroot/optee.
+          pr_pairs = [
+              ("demo_aiot_a733_v3", "buildroot", "optee"),
+              ("demo_aiot_a733_v3", "yocto", "optee"),
+              ("demo_aiot_a733_v3", "ubuntu", "optee"),
+              ("demo_aiot_a733_v3", "debian", "optee"),
+              ("demo_aiot_a733_v3", "openwrt", "optee"),
+              ("demo_aiot_a733_v3", "buildroot", "no-optee"),
+              ("radxa_a7a", "buildroot", "optee"),
+          ]
+          full_pairs = [
+              (board, fs, tee)
               for board in boards
-              for fs in rootfs
+              for fs in full_rootfs
               for tee in tees
           ]
+
+          if scope == "full":
+              include = rows(full_pairs)
+              label = "full"
+          elif scope == "pr" or event == "pull_request":
+              include = rows(pr_pairs)
+              label = "pr"
+          else:
+              include = rows(full_pairs)
+              label = "full"
+
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write("matrix=" + json.dumps({"include": include}) + "\n")
+          print("scope:", label, "jobs:", len(include))
           print("matrix include:", json.dumps(include, indent=2))
           PY
 
@@ -66,13 +117,48 @@ jobs:
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     env:
       DEBIAN_FRONTEND: noninteractive
+      # GitHub cache cap is 10 GB/repo (LRU). 20 jobs × 2G evict each other.
+      # Only the long compile jobs: buildroot / openwrt / yocto, 1G each.
+      ENABLE_CCACHE: ${{ matrix.rootfs == 'buildroot' || matrix.rootfs == 'openwrt' || matrix.rootfs == 'yocto' }}
     steps:
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /opt/hostedtoolcache/CodeQL || true
           sudo docker image prune -af || true
-          df -h /
+          df -hT / /mnt || df -hT /
+
+      - name: Reclaim extra disk (Yocto)
+        if: matrix.rootfs == 'yocto'
+        run: |
+          set -euo pipefail
+          # Extra runtimes beyond the common cleanup (~10 GB+).
+          sudo rm -rf /usr/share/swift /usr/local/share/powershell \
+            /usr/local/.ghcup /opt/az /usr/share/miniconda || true
+          # Runners often keep a several-GB swapfile on /mnt. Drop it so
+          # bitbake can use that disk; recreate a modest swap on /.
+          if [ -f /mnt/swapfile ]; then
+            sudo swapoff /mnt/swapfile || true
+            sudo rm -f /mnt/swapfile
+          fi
+          if [ ! -e /swapfile ]; then
+            sudo fallocate -l 4G /swapfile
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+            sudo swapon /swapfile
+          fi
+          mnt_kb="$(df --output=avail /mnt 2>/dev/null | tail -1 | tr -d ' ' || true)"
+          if [ -n "${mnt_kb:-}" ] && [ "$mnt_kb" -gt $((10 * 1024 * 1024)) ]; then
+            sudo mkdir -p /mnt/yocto
+            sudo chown "$(id -un):$(id -gn)" /mnt/yocto
+            echo "OPENTINA_YOCTO_DIR=/mnt/yocto" >> "$GITHUB_ENV"
+            echo "Using /mnt for Yocto workdir (${mnt_kb} KiB free)"
+          else
+            echo "/mnt is small or missing; Yocto stays on the workspace disk"
+            echo "HMI/qt profile (mesa + llvm) likely needs a larger runner"
+          fi
+          df -hT / /mnt || df -hT /
+          swapon --show || true
 
       - uses: actions/checkout@v4
 
@@ -88,13 +174,13 @@ jobs:
         run: ./scripts/ci-install-deps.sh
 
       - uses: hendrikmuhs/ccache-action@v1.2
+        if: env.ENABLE_CCACHE == 'true'
         with:
           key: ${{ matrix.board }}-${{ matrix.rootfs }}-${{ matrix.tee }}-${{ runner.os }}
           restore-keys: |
             ${{ matrix.board }}-${{ matrix.rootfs }}-${{ matrix.tee }}-${{ runner.os }}
             ${{ matrix.board }}-${{ matrix.rootfs }}-${{ runner.os }}
-            ${{ matrix.board }}-${{ runner.os }}
-          max-size: 2G
+          max-size: 1G
 
       - name: Allow unprivileged user namespaces (Yocto)
         if: matrix.rootfs == 'yocto'
@@ -109,7 +195,9 @@ jobs:
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: |
-          export PATH="/usr/lib/ccache:${PATH}"
+          if [ "${ENABLE_CCACHE}" = true ]; then
+            export PATH="/usr/lib/ccache:${PATH}"
+          fi
           ./build.sh ${{ matrix.tee_flag }} "${{ matrix.board }}" "${{ matrix.rootfs }}" build
           printf '%s\n' "${{ matrix.tee }}" > "output/${{ matrix.board }}/OPTEE.txt"
 
@@ -150,8 +238,8 @@ jobs:
 
   release:
     name: GitHub Release ${{ github.ref_name }}
-    needs: images
-    if: ${{ always() && !cancelled() && startsWith(github.ref, 'refs/tags/') }}
+    needs: [prepare, images]
+    if: ${{ always() && !cancelled() && startsWith(github.ref, 'refs/tags/') && needs.prepare.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -162,6 +250,10 @@ jobs:
           path: artifacts
 
       - name: Pack release assets
+        id: pack
+        env:
+          MATRIX_JSON: ${{ needs.prepare.outputs.matrix }}
+          IMAGES_RESULT: ${{ needs.images.result }}
         run: |
           set -euo pipefail
           mkdir -p release
@@ -182,17 +274,83 @@ jobs:
           (cd release && sha256sum *-sdcard.img.xz *-SHA256SUMS.txt *-OPTEE.txt > SHA256SUMS)
           ls -lh release
 
+          python3 <<'PY'
+          import json, os
+          from pathlib import Path
+
+          rows = json.loads(os.environ["MATRIX_JSON"])["include"]
+          expected = [f"{row['board']}-{row['rootfs']}-{row['tee']}" for row in rows]
+          found = {
+              p.name.removesuffix("-sdcard.img.xz")
+              for p in Path("release").glob("*-sdcard.img.xz")
+          }
+          missing_rows = [
+              row for row, name in zip(rows, expected) if name not in found
+          ]
+          published_rows = [
+              row for row, name in zip(rows, expected) if name in found
+          ]
+          extras = sorted(found.difference(expected))
+          tag = os.environ.get("GITHUB_REF_NAME", "")
+          images_result = os.environ.get("IMAGES_RESULT", "")
+
+          def combo(row: dict) -> str:
+              return f"`{row['board']}` / {row['rootfs']} / {row['tee']}"
+
+          lines = [
+              f"OpenTina images for tag `{tag}`.",
+              "",
+          ]
+          if missing_rows:
+              lines += [
+                  f"> **Incomplete matrix** — {len(missing_rows)} of {len(rows)} combinations are missing "
+                  f"(images job result: `{images_result}`). This release is marked as a prerelease.",
+                  "",
+              ]
+          else:
+              lines += [
+                  f"Full matrix ({len(rows)} combinations) published.",
+                  "",
+              ]
+          lines += ["### Published", ""]
+          lines += [f"- {combo(row)}" for row in published_rows]
+          lines += [f"- `{name}`" for name in extras]
+          if not published_rows and not extras:
+              lines.append("- _(none)_")
+          if missing_rows:
+              lines += ["", "### Missing (job failed or produced no image)", ""]
+              lines += [f"- {combo(row)}" for row in missing_rows]
+          lines += [
+              "",
+              "Each `*-sdcard.img.xz` is one board × rootfs × OP-TEE image. "
+              "Decompress with `xz -d` then `dd` to the SD card.",
+              "",
+          ]
+          Path("release-notes.md").write_text("\n".join(lines), encoding="utf-8")
+          print(Path("release-notes.md").read_text(encoding="utf-8"))
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"incomplete={'true' if missing_rows else 'false'}\n")
+          PY
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          notes="$(printf 'OpenTina images for tag `%s`.\n\nEach `*-sdcard.img.xz` is one board × rootfs × OP-TEE image. Decompress with `xz -d` then `dd` to the SD card.\n' "$tag")"
+          extra=()
+          if [ "${{ steps.pack.outputs.incomplete }}" = true ]; then
+            extra+=(--prerelease)
+          else
+            extra+=(--latest)
+          fi
           if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --notes-file release-notes.md "${extra[@]}"
             gh release upload "$tag" release/* --clobber
           else
             gh release create "$tag" release/* \
               --title "$tag" \
-              --notes "$notes"
+              --notes-file release-notes.md \
+              "${extra[@]}"
           fi
