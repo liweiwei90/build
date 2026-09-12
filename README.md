@@ -162,7 +162,8 @@ cd /path/to/build    # 本 README 所在目录
   - **`OPENWRT_ROOTFS_MB`**：`mkfs.ext4` 镜像大小，默认 `2048`（与 `partitions.cfg` root 分区一致）
   - **`OPENWRT_JOBS`**：覆盖 OpenWrt make 并行数（默认 `JOBS`）
 - **产物**：`bin/targets/<TGT>/<SUBTGT>/openwrt-*-rootfs.tar.gz` 解包后 `mkfs.ext4 -d` 生成 **`output/<BOARD>/rootfs.ext2`**。解包时会**删除 OpenWrt 自带的 `lib/modules/`**（kmod 按它自己的内核 ABI 编译，如 6.12.x，与 `sources/linux` 不匹配），再拷入 linux 组件 staged 的 `*.ko`。
-- **内核**：**`OPENTINA_ROOTFS=openwrt`** 构建 **`linux`** 时合并 **`configs/common/linux-openwrt.fragment`**（tmpfs / unix socket / bridge / nftables 等 builtin，供 procd / netifd / firewall4 使用；kmod 已丢弃，缺特性只能往 fragment 加 builtin）。可用 **`LINUX_OPENWRT_FRAGMENT`** 覆盖路径。
+- **内核**：**`OPENTINA_ROOTFS=openwrt`** 构建 **`linux`** 时合并 **`configs/common/linux-openwrt.fragment`**（tmpfs / unix socket / **板载 GMAC** `DWMAC_SUN55I` + `REALTEK_PHY` / bridge / nftables 等 builtin，供 procd / netifd / firewall4 使用；kmod 已丢弃，缺特性只能往 fragment 加 builtin）。可用 **`LINUX_OPENWRT_FRAGMENT`** 覆盖路径。
+- **rootfs overlay**：打包 ext4 时把 `configs/common/openwrt-files/` 叠进镜像——`79_move_config` 改挂 **p3 FAT boot**（不再误挂 raw **p1 boot0**），并用静默 `fw_printenv` 去掉 **Failed to find NVMEM device**；`02_network_opentina` 把 **eth0** 设为 LAN。
 - **示例**：`./build.sh <BOARD> openwrt build`；仅 rootfs：`./build.sh <BOARD> openwrt build openwrt`。首次构建会 bootstrap OpenWrt 自带工具链，耗时较长。
 - **注意**：OpenWrt rootfs 已在 A7A 真机完成启动验证；`armv8` subtarget 与两个 A733 设备定义位于 `configs/common/openwrt-patches/`，设备仍为 rootfs-only 占位（`IMAGES :=`，不产 per-device 镜像）。
 

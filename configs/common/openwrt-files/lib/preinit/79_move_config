@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT
+# OpenTina GPT: p1=boot0 (raw), p2=uboot (raw), p3=boot FAT, p4=root.
+# Upstream sunxi 79_move_config mounts "partition 1" as vfat for sysupgrade.tgz;
+# that is boot0 here and prints: mount /dev/mmcblk0p1 on /mnt failed: Invalid argument.
+
+move_config() {
+	local partdev
+
+	. /lib/upgrade/common.sh
+
+	if export_bootdevice && export_partdevice partdev 3; then
+		if mount -t vfat -o rw,noatime "/dev/$partdev" /mnt 2>/dev/null; then
+			if [ -n "${BACKUP_FILE:-}" ] && [ -f "/mnt/$BACKUP_FILE" ]; then
+				mv -f "/mnt/$BACKUP_FILE" /
+			fi
+			umount /mnt
+		fi
+	fi
+}
+
+boot_hook_add preinit_mount_root move_config

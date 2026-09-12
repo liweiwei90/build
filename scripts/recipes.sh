@@ -35,8 +35,14 @@ build_atf() {
 
 	cd "$atfPath"
 
-	# SPD=opteed: BL31 hands off to preloaded BL32 (OP-TEE at DRAM base) then BL33.
-	make PLAT=sun60i_a733 SPD=opteed CROSS_COMPILE="$cc" all || error "ATF build failed"
+	# SPD=opteed + BL32_BASE: BL31 hands off to preloaded OP-TEE at DRAM base
+	# then BL33. TF-A incremental builds do not rebuild plat objects when SPD=
+	# changes, so a leftover sunxi_bl31_setup.o from SPD=none keeps
+	# bl32_image_ep_info.pc == 0 while still linking opteed →
+	# "Error initializing runtime service opteed_fast". Always clean first.
+	make PLAT=sun60i_a733 CROSS_COMPILE="$cc" clean
+	make PLAT=sun60i_a733 SPD=opteed BL32_BASE=0x40000000 CROSS_COMPILE="$cc" all \
+		|| error "ATF build failed"
 }
 
 clean_atf() {
@@ -555,6 +561,7 @@ build_openwrt() {
 	local mod_staging="$OPENTINA_BUILD_ROOT/.staging-linux-modules"
 	local fw_script="$OPENTINA_BUILD_ROOT/configs/common/install-powervr-firmware.sh"
 	local ta_script="$OPENTINA_BUILD_ROOT/configs/common/install-optee-ta.sh"
+	local ow_overlay="$OPENTINA_BUILD_ROOT/configs/common/install-openwrt-overlay.sh"
 	local fw_cache="${OPENTINA_FIRMWARE_CACHE:-$OPENTINA_BUILD_ROOT/dl/firmware/powervr}"
 	local optee_export="${OPENTINA_OPTEE_EXPORT:-${outDir%/}/optee}"
 	rm -f "$outDir/rootfs.ext2"
@@ -572,14 +579,14 @@ build_openwrt() {
 	# are installed the same way as Buildroot (br2-post-build.sh).
 	#
 	# $1=rootfs_tar $2=stage $3=rootfs.ext2 $4=size $5=mod_staging
-	# $6=fw_script $7=ta_script $8=optee_export
-	local mkimg='tar -xpf "$1" -C "$2" && rm -rf "$2/lib/modules" && if [ -d "$5/lib/modules" ]; then mkdir -p "$2/lib/modules" && cp -a "$5/lib/modules/." "$2/lib/modules/" && chown -R 0:0 "$2/lib/modules"; fi && "$6" "$2" && OPENTINA_OPTEE_EXPORT="$8" bash "$7" "$2" && mkfs.ext4 -d "$2" -L rootfs -m 0 -F "$3" "$4" >/dev/null'
+	# $6=fw_script $7=ta_script $8=optee_export $9=overlay_script
+	local mkimg='tar -xpf "$1" -C "$2" && rm -rf "$2/lib/modules" && if [ -d "$5/lib/modules" ]; then mkdir -p "$2/lib/modules" && cp -a "$5/lib/modules/." "$2/lib/modules/" && chown -R 0:0 "$2/lib/modules"; fi && "$6" "$2" && OPENTINA_OPTEE_EXPORT="$8" bash "$7" "$2" && bash "$9" "$2" && mkfs.ext4 -d "$2" -L rootfs -m 0 -F "$3" "$4" >/dev/null'
 	echo "Packing OpenWrt rootfs: $rootfs_tar -> $outDir/rootfs.ext2 (${mb}M)"
 	if command -v mkfs.ext4 >/dev/null 2>&1 && [ "$(id -u)" -eq 0 ]; then
-		sh -c "$mkimg" mkimg "$rootfs_tar" "$stage" "$outDir/rootfs.ext2" "${mb}M" "$mod_staging" "$fw_script" "$ta_script" "$optee_export" \
+		sh -c "$mkimg" mkimg "$rootfs_tar" "$stage" "$outDir/rootfs.ext2" "${mb}M" "$mod_staging" "$fw_script" "$ta_script" "$optee_export" "$ow_overlay" \
 			|| error "OpenWrt rootfs image build failed"
 	elif command -v mkfs.ext4 >/dev/null 2>&1 && command -v fakeroot >/dev/null 2>&1; then
-		fakeroot -- sh -c "$mkimg" mkimg "$rootfs_tar" "$stage" "$outDir/rootfs.ext2" "${mb}M" "$mod_staging" "$fw_script" "$ta_script" "$optee_export" \
+		fakeroot -- sh -c "$mkimg" mkimg "$rootfs_tar" "$stage" "$outDir/rootfs.ext2" "${mb}M" "$mod_staging" "$fw_script" "$ta_script" "$optee_export" "$ow_overlay" \
 			|| error "OpenWrt rootfs image build failed (fakeroot)"
 	elif command -v docker >/dev/null 2>&1; then
 		local img="${OPENTINA_MKE2FS_IMAGE:-opentina-buildenv:24.04}"
@@ -600,13 +607,16 @@ build_openwrt() {
 		fi
 		docker run --rm \
 			-e OPENTINA_FIRMWARE_CACHE=/fwcache \
+			-e OPENTINA_OPENWRT_FILES=/openwrt-files \
 			"${docker_optee_env[@]}" \
 			-v "$rootfs_tar:/rootfs.tar.gz:ro" -v "$outDir:/out" \
 			-v "$fw_script:/install-powervr-firmware.sh:ro" \
 			-v "$ta_script:/install-optee-ta.sh:ro" \
+			-v "$ow_overlay:/install-openwrt-overlay.sh:ro" \
+			-v "$OPENTINA_BUILD_ROOT/configs/common/openwrt-files:/openwrt-files:ro" \
 			-v "$fw_cache:/fwcache:ro" \
 			"${docker_mod_vol[@]}" "${docker_optee_vol[@]}" --user 0:0 "$img" \
-			sh -c "mkdir -p /stage && tar -xpf /rootfs.tar.gz -C /stage && rm -rf /stage/lib/modules && ${docker_mod_copy} && /install-powervr-firmware.sh /stage && bash /install-optee-ta.sh /stage && mkfs.ext4 -d /stage -L rootfs -m 0 -F /out/rootfs.ext2 ${mb}M >/dev/null && chown $(id -u):$(id -g) /out/rootfs.ext2" \
+			sh -c "mkdir -p /stage && tar -xpf /rootfs.tar.gz -C /stage && rm -rf /stage/lib/modules && ${docker_mod_copy} && /install-powervr-firmware.sh /stage && bash /install-optee-ta.sh /stage && bash /install-openwrt-overlay.sh /stage && mkfs.ext4 -d /stage -L rootfs -m 0 -F /out/rootfs.ext2 ${mb}M >/dev/null && chown $(id -u):$(id -g) /out/rootfs.ext2" \
 			|| error "docker mkfs.ext4 failed for OpenWrt rootfs"
 	else
 		error "Need mkfs.ext4 plus root/fakeroot, or docker, to build the OpenWrt rootfs image"
@@ -644,7 +654,7 @@ build_bootfs() {
 	local root="${EXTLINUX_ROOT:-root=/dev/mmcblk0p4 rw rootwait}"
 	local cons="${EXTLINUX_CONSOLE:-console=ttyS0,115200 loglevel=9}"
 	case "${OPENTINA_ROOTFS:-buildroot}" in
-	debian | yocto)
+	debian | ubuntu | yocto)
 		# Root on GPT p4; boot FAT is not /boot in rootfs — disable systemd auto ESP mount.
 		case " ${cons} " in
 		*" systemd.gpt_auto="*) ;;
