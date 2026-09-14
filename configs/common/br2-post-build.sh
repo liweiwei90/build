@@ -7,4 +7,6 @@ TARGET_DIR="${1:?TARGET_DIR missing}"
 SCRIPT_DIR="$(cd "$(dirname -- "$0")" && pwd)"
 "$SCRIPT_DIR/install-linux-modules.sh" "$TARGET_DIR"
 "$SCRIPT_DIR/install-powervr-firmware.sh" "$TARGET_DIR"
-bash "$SCRIPT_DIR/install-optee-ta.sh" "$TARGET_DIR"
+if [ "${OPENTINA_OPTEE:-1}" != "0" ]; then
+	bash "$SCRIPT_DIR/install-optee-ta.sh" "$TARGET_DIR"
+fi

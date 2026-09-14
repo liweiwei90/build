@@ -63,9 +63,26 @@ cd /path/to/build    # 本 README 所在目录
 ./build.sh <BOARD_NAME> build
 ```
 
-产物示例：`output/radxa_a7a/sdcard.img`、`rootfs.ext2`、`Image.gz`、dtb、`u-boot.fex`、`tee.bin` 等。
+产物示例：`output/radxa_a7a/sdcard.img`、`rootfs.ext2`、`Image.gz`、dtb、`u-boot.fex`、（开启 OP-TEE 时还有）`tee.bin` 等。
 
-默认启动链：`BROM → boot0 → SPL FIT（BL31 + BL32/OP-TEE + U-Boot）→ TF-A → OP-TEE → U-Boot → Linux`。
+OP-TEE 为**整项目可选**（默认开）。开启时启动链：`BROM → boot0 → SPL FIT（BL31 + BL32/OP-TEE + U-Boot）→ TF-A → OP-TEE → U-Boot → Linux`。关闭时（`--no-optee` / `OPENTINA_OPTEE=0`）：`BROM → boot0 → SPL FIT（BL31 + U-Boot）→ TF-A → U-Boot → Linux`。
+
+---
+
+## OP-TEE（整项目可选，默认开）
+
+一条开关同时控制 BL32、ATF dispatcher、U-Boot SPL FIT、内核驱动、Buildroot 用户态和各 rootfs 的 TA 安装。
+
+| 方式 | 说明 |
+|------|------|
+| `./build.sh --optee <BOARD> build` | 显式开启（与默认相同） |
+| `./build.sh --no-optee <BOARD> build` | 关闭：不编 `optee`，ATF `SPD=none`，U-Boot `SUNXI_BL32_BASE=0`，不合并 `linux-optee.fragment`，Buildroot 去掉 `OPTEE_*` 包 |
+| `OPENTINA_OPTEE=0 ./build.sh <BOARD> build` | 与 `--no-optee` 相同 |
+| 板级 `configs/*/config` 里 `OPENTINA_OPTEE="${OPENTINA_OPTEE:-1}"` | 板级默认；命令行 / 环境变量优先 |
+
+优先级：`--optee` / `--no-optee` 与已导出的 `OPENTINA_OPTEE` > 板级默认 > `1`。  
+从开切到关（或反过来）后需要重编 **`atf` + `uboot`**（以及 **`linux` / rootfs**），否则会留下旧的 `SPD=opteed` / FIT BL32。  
+关闭 OP-TEE 时，`build_linux` 会从板级 DTB 删掉 TZDRAM/SHM `reserved-memory` 和 `firmware/optee`，避免内核 Image 落在 `0x40000000` 的 32 MiB `no-map` 里并报 `failed to reserve memory for node 'optee@40000000'`。
 
 ---
 
@@ -73,9 +90,9 @@ cd /path/to/build    # 本 README 所在目录
 
 - **配方位置**：`scripts/recipes.sh` 中的 **`build_br2`** / **`clean_br2`**（组件名用 **`br2`**，避免与命令行 **`OPENTINA_ROOTFS=buildroot`** 混淆）。
 - **板级变量**：`configs/<板>/config` 里 **`BUILDROOT_DEFCONFIG`**（默认 `br2_opentina.defconfig`，与 `config` 同目录）。
-- **defconfig 模板**：`configs/*/br2_opentina.defconfig` — AArch64 + Bootlin 外部工具链 + **无内核**（内核由本仓库 `linux` 组件构建）+ **ext2 rootfs** + **OP-TEE 用户态 4.6.0**（与 `optee` 组件的 OP-TEE OS 同发行版：`BR2_PACKAGE_OPTEE_CLIENT` / `OPTEE_TEST` / `OPTEE_EXAMPLES`；`libteec`、`tee-supplicant`，SysV `S30tee-supplicant`；`xtest` / `optee_example_*` 用 OpenTina 的 TA SDK 编，不要开 `BR2_TARGET_OPTEE_OS`）。BL32 仍由 **`optee`** 组件构建。
-- **TA**：`br2-post-build.sh`（以及 ubuntu/debian/yocto/openwrt 的镜像 overlay）把 `output/<BOARD>/optee` 里的 `*.ta` 装到 **`/lib/optee_armtz`**；xtest / optee-examples 的 TA 由对应 BR 包装进同一目录（需先编 **`optee`**）。安全存储目录 **`/data/tee`**。改过 TA 后要重编对应 rootfs 并重烧 root 分区，只烧 `u-boot.fex` 不会更新它们。
-- **板上验证**：`xtest`（回归；首次建议 `xtest -l` 看用例），以及 `optee_example_hello_world` 等。
+- **defconfig 模板**：`configs/*/br2_opentina.defconfig` — AArch64 + Bootlin 外部工具链 + **无内核**（内核由本仓库 `linux` 组件构建）+ **ext2 rootfs**。**OP-TEE 开启时**再编用户态 4.6.0（`BR2_PACKAGE_OPTEE_CLIENT` / `OPTEE_TEST` / `OPTEE_EXAMPLES`；`libteec`、`tee-supplicant`，SysV `S30tee-supplicant`；`xtest` / `optee_example_*` 用 OpenTina 的 TA SDK 编，不要开 `BR2_TARGET_OPTEE_OS`）。BL32 仍由 **`optee`** 组件构建。**关闭 OP-TEE** 时配方会关掉上述包，也不再要求 TA SDK。
+- **TA**（仅 OP-TEE 开启）：`br2-post-build.sh`（以及 ubuntu/debian/yocto/openwrt 的镜像 overlay）把 `output/<BOARD>/optee` 里 **`export-ta_*/ta/*.ta`** 装到 **`/lib/optee_armtz`**；xtest / optee-examples 的 TA 由对应 BR 包装进同一目录（需先编 **`optee`**）。安全存储目录 **`/data/tee`**。改过 TA 后要重编对应 rootfs 并重烧 root 分区，只烧 `u-boot.fex` 不会更新它们。
+- **板上验证**（仅 OP-TEE 开启）：`xtest`（回归；首次建议 `xtest -l` 看用例），以及 `optee_example_hello_world` 等。
 - **仅构建 rootfs**：`./build.sh <BOARD> build br2`（需已 `init` 克隆 `sources/buildroot`）。
 - **分区**：`configs/*/partitions.cfg` 中 **`partition root`** 使用镜像 **`rootfs.ext2`**，起始偏移 **`148M`**（紧接 128 MiB 的 `boot` 分区之后）。若板卡上块设备节点与 `mmcblk0p4` 不一致，请同步修改板级 **`EXTLINUX_ROOT`**（见下节）。
 
@@ -145,7 +162,7 @@ cd /path/to/build    # 本 README 所在目录
 - **示例**：`./build.sh <BOARD> yocto build yocto`（仅 rootfs，耗时长）；完整镜像：`./build.sh <BOARD> yocto build`
 - **内核**：与 Ubuntu/Debian 相同，**`yocto`** 构建 **`linux`** 时合并 **`linux-systemd.fragment`**（`CONFIG_NET`、`CONFIG_UNIX`、`CONFIG_TMPFS` 等）。未合并时 sysvinit/udev/dbus 会报 **`Function not implemented`**、`/var/volatile` 失败。
 - **默认登录**：**`root` / `root`**，**`opentina` / `opentina`**（`conf/include/opentina-default-users.inc`，镜像构建后处理写入 shadow）。可在 `local.conf` 覆盖 **`OPENTINA_ROOT_PASSWORD`** 等。SSH 已启用 **`allow-root-login`**。
-- **注意**：**不要用 root 跑 bitbake**；**`OPENTINA_DOCKER=1`** 的 OpenTina 镜像未预装完整 Yocto 宿主机依赖，建议在**宿主机**编 **`yocto`** 组件。Layer 阶段为 **rootfs-only**（**`linux-dummy`**），与 **`linux` / `uboot` / `atf` / `optee`** 组件并行不冲突。
+- **注意**：**不要用 root 跑 bitbake**；**`OPENTINA_DOCKER=1`** 的 OpenTina 镜像未预装完整 Yocto 宿主机依赖，建议在**宿主机**编 **`yocto`** 组件。Layer 阶段为 **rootfs-only**（**`linux-dummy`**），与 **`linux` / `uboot` / `atf`**（以及可选的 **`optee`**）组件并行不冲突。
 - **若报 `meta-openembedded/meta-oe` 不存在**：说明只拉了 poky、未拉 meta-oe。在 **`sources/meta-opentina`** 执行 **`./yocto-init.sh`** 后重试；或 **`./build.sh … yocto build yocto`**（会自动补跑 init）。
 
 ---
@@ -154,7 +171,7 @@ cd /path/to/build    # 本 README 所在目录
 
 - **源码**：manifest 中的 **`openwrt/openwrt`** → `sources/openwrt`（pin 在 **`openwrt-25.12`** 稳定分支，`clone-depth=1`）。也可设环境变量 **`OPENTINA_OPENWRT_DIR`** 指向本地已有的 OpenWrt 树（如已预热 `build_dir/` 的 fork），跳过 manifest 克隆。
 - **配方**：`scripts/recipes.sh` 中的 **`build_openwrt`** / **`clean_openwrt`**；**`OPENTINA_ROOTFS=openwrt`** 时默认组件链使用 **`openwrt`** 替代 **`br2`**。
-- **定位**：OpenWrt 只作为 **rootfs 供应商**——boot 链（OP-TEE / ATF / U-Boot / 内核 / dtb）全部复用本仓库组件；OpenWrt 自产的内核、kmod 与 per-device 镜像全部丢弃，只消费 target 级 **`openwrt-*-rootfs.tar.gz`**。
+- **定位**：OpenWrt 只作为 **rootfs 供应商**——boot 链（ATF / U-Boot / 内核 / dtb，以及可选的 OP-TEE）全部复用本仓库组件；OpenWrt 自产的内核、kmod 与 per-device 镜像全部丢弃，只消费 target 级 **`openwrt-*-rootfs.tar.gz`**。
 - **OpenWrt 补丁**：先应用 `configs/common/openwrt-patches/*.patch`，再应用 `configs/<board>/openwrt-patches/*.patch`；每组内按字典序 `git apply` 到 OpenWrt 树（应用前先把补丁涉及文件 reset 回 HEAD，保证可重复执行）。
 - **配置**（板级 `config`）：
   - **`OPENWRT_CONFIG`**：板级目录下的 `.config` 种子（如 `openwrt.config`），拷贝后经 `make defconfig` 归一化
@@ -179,7 +196,8 @@ cd /path/to/build    # 本 README 所在目录
 ## `./build.sh` 命令总览
 
 所有子命令前可重复加 **`--docker`**（等价于本次执行启用容器），或单独使用 **`--docker-shell`**（见下文「Docker」）。  
-**`--docker` / `--docker-shell` 必须出现在子命令之前**（解析后会被剥掉，再按下面语法处理）。
+**`--optee` / `--no-optee`** 同样写在子命令之前，控制整条链是否编 OP-TEE（见下节）。  
+**这些前缀必须出现在子命令之前**（解析后会被剥掉，再按下面语法处理）。
 
 | 用法 | 说明 |
 |------|------|
@@ -211,11 +229,11 @@ cd /path/to/build    # 本 README 所在目录
 
 | 组件 | 含义 |
 |------|------|
-| `optee` | OP-TEE OS（BL32，`tee.bin` 加载到 DRAM `0x40000000`） |
-| `atf` | Trusted Firmware-A（BL31，`SPD=opteed`） |
-| `uboot` | U-Boot（依赖已成功构建的 `optee` 与 `atf`；SPL FIT 含 BL31+BL32+U-Boot） |
-| `linux` | Linux 内核与 dtb（合并 `linux-optee.fragment`，DTB 预留 TZDRAM/SHM） |
-| `br2` | **Buildroot**：在 `sources/buildroot` 中按板级 `BUILDROOT_DEFCONFIG` 生成 `rootfs.ext2`（含 `tee-supplicant` / `libteec` / `xtest` / `optee_example_*`），拷贝到 `output/<BOARD>/rootfs.ext2` |
+| `optee` | OP-TEE OS（BL32，`tee.bin` 加载到 DRAM `0x40000000`）。**仅 `OPENTINA_OPTEE=1` 时出现在默认组件链** |
+| `atf` | Trusted Firmware-A（BL31；开启 OP-TEE 时 `SPD=opteed`，关闭时 `SPD=none`） |
+| `uboot` | U-Boot（依赖 `atf`；开启 OP-TEE 时还依赖 `optee`，SPL FIT 含 BL31+BL32+U-Boot，否则只有 BL31+U-Boot） |
+| `linux` | Linux 内核与 dtb（开启 OP-TEE 时合并 `linux-optee.fragment`） |
+| `br2` | **Buildroot**：在 `sources/buildroot` 中按板级 `BUILDROOT_DEFCONFIG` 生成 `rootfs.ext2`（开启 OP-TEE 时含 `tee-supplicant` / `libteec` / `xtest` / `optee_example_*`），拷贝到 `output/<BOARD>/rootfs.ext2` |
 | `ubuntu` | **Ubuntu rootfs**：在 `sources/ubuntu` 中生成 `ubuntu-rootfs.ext4` 并拷贝为 `rootfs.ext2`（`OPENTINA_ROOTFS=ubuntu` 时替代 `br2`） |
 | `debian` | **Debian rootfs**：在 `sources/debian/out/` 中取最新 `.ext4` 并拷贝为 `rootfs.ext2`（`OPENTINA_ROOTFS=debian` 时替代 `br2`） |
 | `yocto` | **Yocto rootfs**：bitbake **`opentina-image-minimal`** / **`-qt`**，ext4 拷贝为 `rootfs.ext2`（`OPENTINA_ROOTFS=yocto` 时替代 `br2`） |
@@ -252,6 +270,7 @@ export OPENTINA_DOCKER=1
 |-------------|------|
 | `OPENTINA_DOCKER=1` | 本次进程在宿主机上时，若存在 `docker` 命令则 `exec` 进默认镜像再执行 `build.sh`。设为 `0` 可关闭（在曾 `export OPENTINA_DOCKER=1` 的 shell 里恢复宿主机构建）。 |
 | `--docker` | 与上类似，仅作用于**当前命令**（可写多次，效果同开）。 |
+| `--optee` / `--no-optee` | 打开 / 关闭整项目 OP-TEE（须写在子命令前；会传入 Docker）。 |
 | `--docker-shell` | 不进 `build.sh` 子命令，直接进入镜像内 `bash -il`。 |
 | `OPENTINA_SKIP_DOCKER=1` | 强制宿主机：即使环境里带了 `OPENTINA_DOCKER=1` 也不进容器。 |
 | `OPENTINA_DOCKER_IMAGE` | 默认 `opentina-buildenv:24.04`；不存在时由 `scripts/docker-exec.sh` 对 `docker/Dockerfile` 执行 `docker build`。 |
@@ -307,6 +326,34 @@ export OPENTINA_DOCKER=1
 | `BUILDROOT_DEFCONFIG` | Buildroot 片段 defconfig 文件名（位于同一板级目录，默认 `br2_opentina.defconfig`） |
 | `EXTLINUX_ROOT` | 写入 `extlinux.conf` 的 **root=** 等（默认 `root=/dev/mmcblk0p4 rw rootwait`，需与 GPT 根分区序号一致） |
 | `EXTLINUX_CONSOLE` | 写入 `extlinux.conf` 的 **console / loglevel / earlycon** 等 |
+| `OPENTINA_OPTEE` | `1`（默认）编 OP-TEE 全链；`0` 关闭。也可在命令行用 `--optee` / `--no-optee` |
+
+---
+
+## GitHub Actions（CI 镜像）
+
+工作流 [`.github/workflows/images.yml`](.github/workflows/images.yml)：
+
+| 触发 | 行为 |
+|------|------|
+| **pull request → `tina-dev`** | 7 个 job：`demo_aiot_a733_v3` 的 buildroot / yocto / ubuntu / debian / openwrt（**optee**）+ demo **buildroot / no-optee** + `radxa_a7a` **buildroot / optee**。仅改 `*.md` / `LICENSE` / `.gitignore` 的 PR **不**触发。产物在该次 run 的 Artifacts（保留 14 天），**不**发 Release |
+| **workflow_dispatch** | 完整矩阵；也可选只跑上述 PR 子集 |
+| **push 新 tag** | 完整矩阵，成功项打成 `xz` 后发布同名 **GitHub Release** |
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Release 页文件名例如 `demo_aiot_a733_v3-buildroot-optee-sdcard.img.xz`（单附件上限约 2 GiB）。解压：`xz -d <file>-sdcard.img.xz`。
+
+完整矩阵：`demo_aiot_a733_v3`、`radxa_a7a` × `buildroot`、`ubuntu`、`debian`、`openwrt`、`yocto` × **`optee`**、**`no-optee`**。某组失败不影响其它组。tag Release 会挂上**已成功**的镜像；若有组合缺失，Release notes 会列出缺失项，并标成 **prerelease**。Yocto / OpenWrt 的 job timeout 分别为 360 / 240 分钟。
+
+`ccache` 只给 **buildroot / openwrt / yocto**（`max-size: 1G`），避开 GitHub 每仓库 10 GB 缓存上限把 20 个 2 G 条目互相挤掉。Ubuntu / Debian 走 Docker buildx，宿主 ccache 收益低，不开。
+
+CI 在 **Ubuntu 24.04 runner** 上装与 `docker/Dockerfile` 对齐的宿主依赖（`scripts/ci-install-deps.sh`），**不**再套一层 `./build.sh --docker`，以便 Ubuntu/Debian rootfs 走宿主机 Docker buildx。Yocto job 会放开 `kernel.apparmor_restrict_unprivileged_userns`，并尽量把工作区放到 `/mnt`（回收 runner 的 swapfile）。默认 `opentina-image-minimal` 余量够用；若以后接 HMI/qt（mesa + llvm），需要更大 runner。
+
+`./build.sh init` 要拉 `opentina-org` 下的 linux / u-boot 等仓。若这些仓是**私有**的，在仓库 Secrets 里加 **`OPENTINA_GH_TOKEN`**（能读对应 project 的 PAT）；公开仓用默认 `GITHUB_TOKEN` 即可。
 
 ---
 

@@ -23,6 +23,14 @@ while [ $# -gt 0 ]; do
 		OPENTINA_DOCKER=1
 		shift
 		;;
+	--optee)
+		OPENTINA_OPTEE=1
+		shift
+		;;
+	--no-optee)
+		OPENTINA_OPTEE=0
+		shift
+		;;
 	*)
 		break
 		;;
@@ -118,6 +126,11 @@ usage() {
 	echo "  Force host even with OPENTINA_DOCKER in env:"
 	echo "    OPENTINA_SKIP_DOCKER=1 ./build.sh ..."
 	echo
+	echo "  OP-TEE (optional; default on):"
+	echo "    ./build.sh --optee ...           # enable BL32 + kernel driver + TAs"
+	echo "    ./build.sh --no-optee ...        # ATF SPD=none, no BL32 / TAs"
+	echo "    OPENTINA_OPTEE=0 ./build.sh ...  # same as --no-optee (board config may set a default)"
+	echo
 	echo "  ./build.sh targets | list"
 	echo "      List board targets (BOARD_NAME) and root filesystem types"
 	echo
@@ -209,17 +222,12 @@ opentina_rootfs_component() {
 	esac
 }
 
-availableComponents=(optee atf uboot linux "$(opentina_rootfs_component)" bootfs image)
-
-component="$*"
-[ "$component" ] || component="${availableComponents[*]}"
+userComponents="$*"
 
 # Setting up default building parameters
 [ "$JOBS" ] || JOBS="$(nproc)"
 outDir="$OPENTINA_BUILD_ROOT/output/$boardName/"
 export outDir
-# TAs for /lib/optee_armtz (Buildroot post-build and ubuntu/debian/yocto overlay).
-export OPENTINA_OPTEE_EXPORT="$outDir/optee"
 
 # Setting up default make parameters
 export MAKEFLAGS="$MAKEFLAGS -j$JOBS"
@@ -227,6 +235,36 @@ export MAKEFLAGS="$MAKEFLAGS -j$JOBS"
 mkdir -p "$outDir"
 
 source "$OPENTINA_BUILD_ROOT/configs/$boardConfigDir/config"
+
+# Board config may set OPENTINA_OPTEE="${OPENTINA_OPTEE:-1}"; CLI/env already won.
+if opentina_optee_enabled; then
+	export OPENTINA_OPTEE=1
+	export OPENTINA_OPTEE_EXPORT="${outDir%/}/optee"
+	availableComponents=(optee atf uboot linux "$(opentina_rootfs_component)" bootfs image)
+	blue_msg "OP-TEE: enabled (BL32 + kernel driver + TAs)"
+else
+	export OPENTINA_OPTEE=0
+	unset OPENTINA_OPTEE_EXPORT
+	availableComponents=(atf uboot linux "$(opentina_rootfs_component)" bootfs image)
+	# Still clean leftover tee.bin / $O/optee when OP-TEE is off.
+	if [ "$action" = clean ]; then
+		availableComponents=(optee "${availableComponents[@]}")
+	fi
+	blue_msg "OP-TEE: disabled (ATF SPD=none, no BL32 / TAs)"
+fi
+
+component="$userComponents"
+[ "$component" ] || component="${availableComponents[*]}"
+
+if [ "$action" = build ]; then
+	for _c in $component; do
+		if [ "$_c" = optee ] && ! opentina_optee_enabled; then
+			error "OP-TEE is disabled (OPENTINA_OPTEE=0). Enable with --optee or OPENTINA_OPTEE=1."
+		fi
+	done
+	unset _c
+fi
+
 source "$OPENTINA_BUILD_ROOT/scripts/recipes.sh"
 
 for comp in ${component}; do

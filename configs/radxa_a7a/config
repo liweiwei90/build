@@ -11,6 +11,9 @@ LINUX_CONFIG="a733_minimal_defconfig"
 
 # Buildroot: defconfig file under this board directory (see br2_opentina.defconfig).
 BUILDROOT_DEFCONFIG="${BUILDROOT_DEFCONFIG:-br2_opentina.defconfig}"
+# OP-TEE (BL32 + kernel driver + Buildroot tee-supplicant / TAs). Override:
+#   OPENTINA_OPTEE=0 ./build.sh ...   or   ./build.sh --no-optee ...
+OPENTINA_OPTEE="${OPENTINA_OPTEE:-1}"
 
 OPENWRT_CONFIG="${OPENWRT_CONFIG:-openwrt.config}"
 OPENWRT_TARGET="${OPENWRT_TARGET:-sunxi}"

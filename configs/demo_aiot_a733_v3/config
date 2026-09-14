@@ -13,5 +13,8 @@ OPENWRT_SUBTARGET="${OPENWRT_SUBTARGET:-armv8}"
 OPENWRT_ROOTFS_MB="${OPENWRT_ROOTFS_MB:-2048}"
 # Yocto (meta-opentina): MACHINE matches sun60i-a733-aiot.dtb / aiotdemo U-Boot.
 OPENTINA_YOCTO_MACHINE="${OPENTINA_YOCTO_MACHINE:-a733-aiot}"
-EXTLINUX_ROOT="${EXTLINUX_ROOT:-root=/dev/mmcblk0p4 earlycon rw rootwait}"
-EXTLINUX_CONSOLE="${EXTLINUX_CONSOLE:-console=ttyS0,115200 loglevel=9}"
+# OP-TEE (BL32 + kernel driver + Buildroot tee-supplicant / TAs). Override:
+#   OPENTINA_OPTEE=0 ./build.sh ...   or   ./build.sh --no-optee ...
+OPENTINA_OPTEE="${OPENTINA_OPTEE:-1}"
+EXTLINUX_ROOT="${EXTLINUX_ROOT:-root=/dev/mmcblk0p4 rw rootwait}"
+EXTLINUX_CONSOLE="${EXTLINUX_CONSOLE:-console=ttyS0,115200n8 loglevel=9}"
