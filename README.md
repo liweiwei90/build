@@ -13,12 +13,13 @@
 ```shell
 sudo apt install -y \
     bc bison build-essential ca-certificates chrpath cpio device-tree-compiler \
-    dosfstools flex g++-aarch64-linux-gnu gcc-aarch64-linux-gnu \
+    diffstat dosfstools flex g++-aarch64-linux-gnu gcc-aarch64-linux-gnu \
     genimage git libgnutls28-dev libssl-dev make mtools patch perl \
-    python3 python3-cryptography python3-pyelftools python3-setuptools rsync swig u-boot-tools wget xz-utils
+    python3 python3-cryptography python3-pyelftools python3-setuptools \
+    rpcsvc-proto rsync swig texinfo u-boot-tools wget xz-utils
 ```
 
-其中 **`chrpath`** 为 Yocto/BitBake `HOSTTOOLS` 所需。若未装系统包，`sources/meta-opentina/opentina-build.sh` 会尝试解压到 `~/.local/bin`。
+其中 **`chrpath`**、**`diffstat`**、**`texinfo`**（`makeinfo`）、**`rpcsvc-proto`**（`rpcgen`）为 Yocto/BitBake `HOSTTOOLS` 所需。若未装系统包，`sources/meta-opentina/opentina-build.sh` 会尝试把部分工具解压到 `~/.local/bin`。
 
 **Ubuntu 24.04+ / Yocto：** AppArmor 默认限制无特权 user namespace，BitBake 会报 `User namespaces are not usable`。一次性放开：
 
