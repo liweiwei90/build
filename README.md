@@ -13,12 +13,13 @@
 ```shell
 sudo apt install -y \
     bc bison build-essential ca-certificates chrpath cpio device-tree-compiler \
-    dosfstools flex g++-aarch64-linux-gnu gcc-aarch64-linux-gnu \
+    diffstat dosfstools flex g++-aarch64-linux-gnu gcc-aarch64-linux-gnu \
     genimage git libgnutls28-dev libssl-dev make mtools patch perl \
-    python3 python3-cryptography python3-pyelftools python3-setuptools rsync swig u-boot-tools wget xz-utils
+    python3 python3-cryptography python3-pyelftools python3-setuptools \
+    rpcsvc-proto rsync swig texinfo u-boot-tools wget xz-utils
 ```
 
-其中 **`chrpath`** 为 Yocto/BitBake `HOSTTOOLS` 所需。若未装系统包，`sources/meta-opentina/opentina-build.sh` 会尝试解压到 `~/.local/bin`。
+其中 **`chrpath`**、**`diffstat`**、**`texinfo`**（`makeinfo`）、**`rpcsvc-proto`**（`rpcgen`）为 Yocto/BitBake `HOSTTOOLS` 所需。若未装系统包，`sources/meta-opentina/opentina-build.sh` 会尝试把部分工具解压到 `~/.local/bin`。
 
 **Ubuntu 24.04+ / Yocto：** AppArmor 默认限制无特权 user namespace，BitBake 会报 `User namespaces are not usable`。一次性放开：
 
@@ -298,11 +299,20 @@ export OPENTINA_DOCKER=1
 
 ---
 
+## 文档（`sources/docs`）
+
+- **源码**：manifest 中的 **`opentina-org/docs`** → `sources/docs`（`revision=main`）。
+- 由 `./build.sh init` 一并拉取；**不是**构建组件，不参与 `build` / `clean`。
+- 项目概览、启动链、仓库地图与板级说明见该仓库 [README](https://github.com/opentina-org/docs)（[中文](https://github.com/opentina-org/docs/blob/main/zh/README.md) / [English](https://github.com/opentina-org/docs/blob/main/en/README.md)）。构建细节仍以本文为准。
+- 远端若尚无 `main` 分支（空仓库），`init` 会克隆空目录并跳过 `--branch`，避免整次 init 失败。
+
+---
+
 ## 目录与产物
 
 | 路径 | 说明 |
 |------|------|
-| `sources/` | `trusted-firmware-a`、`u-boot`、`linux`、`buildroot`、`ubuntu`、`debian`、`meta-opentina`、`yocto/`（Yocto 工作区，由 init 生成）、`awbin` 等（由 manifest 决定；根目录 `.gitignore` 已忽略） |
+| `sources/` | `trusted-firmware-a`、`u-boot`、`linux`、`buildroot`、`ubuntu`、`debian`、`meta-opentina`、`yocto/`（Yocto 工作区，由 init 生成）、`awbin`、`docs` 等（由 manifest 决定；根目录 `.gitignore` 已忽略） |
 | `output/<BOARD_NAME>/` | 内核、dtb、`rootfs.ext2`、`u-boot.fex`、`boot.img`、`sdcard.img`、`.done.*` 等 |
 | `configs/<板级目录>/` | `config`、`partitions.cfg`（`BOARD_NAME` 可与目录名不同） |
 | `scripts/` | `recipes.sh`、`repo_clone.sh`、`docker-exec.sh`、`opentina-boards.sh` 等 |

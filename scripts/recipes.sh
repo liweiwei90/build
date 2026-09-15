@@ -12,8 +12,11 @@ build_optee() {
 	cd "$opteePath"
 
 	# tee-raw.bin: no OP-TEE v1 header; U-Boot FIT loads it at SUNXI_BL32_BASE.
+	# 64-bit core still defaults to ta_arm32+ta_arm64, which needs
+	# arm-linux-gnueabihf-gcc. A733 userspace is AArch64 only.
 	make PLATFORM=sunxi-sun60i_a733 \
 		CROSS_COMPILE64="$cc" \
+		CFG_USER_TA_TARGETS=ta_arm64 \
 		CFG_TEE_CORE_LOG_LEVEL=2 \
 		O="$outDir/optee" \
 		|| error "OP-TEE build failed"
