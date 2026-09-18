@@ -274,7 +274,7 @@ export OPENTINA_DOCKER=1
 | `--optee` / `--no-optee` | 打开 / 关闭整项目 OP-TEE（须写在子命令前；会传入 Docker）。 |
 | `--docker-shell` | 不进 `build.sh` 子命令，直接进入镜像内 `bash -il`。 |
 | `OPENTINA_SKIP_DOCKER=1` | 强制宿主机：即使环境里带了 `OPENTINA_DOCKER=1` 也不进容器。 |
-| `OPENTINA_DOCKER_IMAGE` | 默认 `opentina-buildenv:24.04`；不存在时由 `scripts/docker-exec.sh` 对 `docker/Dockerfile` 执行 `docker build`。 |
+| `OPENTINA_DOCKER_IMAGE` | 默认 `opentina-buildenv:24.04`；镜像不存在或 `docker/Dockerfile` 更新后，由 `scripts/docker-exec.sh` 执行 `docker build`。 |
 | `OPENTINA_DOCKER_HOSTNAME` | 容器主机名（提示符里 `@` 之后），默认 **`opentina`**。 |
 
 容器内会设置 **`OPENTINA_IN_DOCKER=1`**，避免重复套 Docker。  

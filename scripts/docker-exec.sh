@@ -18,7 +18,18 @@ if ! command -v docker >/dev/null 2>&1; then
 	exit 127
 fi
 
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+opentina_docker_image_stale() {
+	if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+		return 0
+	fi
+	# Rebuild when docker/Dockerfile is newer than the existing image.
+	local df_mtime img_epoch
+	df_mtime=$(stat -c %Y "$DOCKERFILE" 2>/dev/null) || return 1
+	img_epoch=$(date -u -d "$(docker image inspect -f '{{.Created}}' "$IMAGE")" +%s 2>/dev/null) || return 1
+	[ "$df_mtime" -gt "$img_epoch" ]
+}
+
+if opentina_docker_image_stale; then
 	echo "Building Docker image $IMAGE (Ubuntu 24.04 build env) ..."
 	docker build -t "$IMAGE" -f "$DOCKERFILE" "$CTX_DIR"
 fi
