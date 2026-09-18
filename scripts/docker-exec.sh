@@ -49,6 +49,10 @@ opentina_docker_opts() {
 		-e "OPENTINA_OPTEE=${OPENTINA_OPTEE:-}"
 		-e "JOBS=${JOBS:-}"
 		-e "TERM=${TERM:-dumb}"
+		# BitBake (and similar) call unshare(CLONE_NEWUSER). Docker's
+		# default seccomp profile blocks that even when the host
+		# kernel.apparmor_restrict_unprivileged_userns=0.
+		--security-opt seccomp=unconfined
 	)
 
 	if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ]; then

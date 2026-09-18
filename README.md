@@ -277,7 +277,7 @@ export OPENTINA_DOCKER=1
 | `OPENTINA_DOCKER_IMAGE` | 默认 `opentina-buildenv:24.04`；镜像不存在或 `docker/Dockerfile` 更新后，由 `scripts/docker-exec.sh` 执行 `docker build`。 |
 | `OPENTINA_DOCKER_HOSTNAME` | 容器主机名（提示符里 `@` 之后），默认 **`opentina`**。 |
 
-容器内会设置 **`OPENTINA_IN_DOCKER=1`**，避免 `build.sh` 再套一层容器。若宿主机有 `/var/run/docker.sock`，`docker-exec.sh` 会把它和宿主机 `docker` CLI / buildx 插件挂进容器，这样 **`ubuntu` / `debian` rootfs** 仍可走宿主机 Docker buildx（仓库以**相同路径** bind-mount，buildx 输出路径才能对上）。  
+容器内会设置 **`OPENTINA_IN_DOCKER=1`**，避免 `build.sh` 再套一层容器。若宿主机有 `/var/run/docker.sock`，`docker-exec.sh` 会把它和宿主机 `docker` CLI / buildx 插件挂进容器，这样 **`ubuntu` / `debian` rootfs** 仍可走宿主机 Docker buildx（仓库以**相同路径** bind-mount，buildx 输出路径才能对上）。容器默认加上 **`--security-opt seccomp=unconfined`**，否则 BitBake 的 `unshare(CLONE_NEWUSER)` 会被 Docker seccomp 拦掉（即使宿主机 `apparmor_restrict_unprivileged_userns=0`）。  
 需要 **`git@` 克隆**时，宿主机上建议配置 SSH agent 或挂载密钥；`docker-exec.sh` 会尝试传递 `SSH_AUTH_SOCK` 与只读挂载 `~/.ssh`。
 
 ---
