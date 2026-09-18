@@ -58,6 +58,28 @@ opentina_docker_opts() {
 		docker_opts+=( -v "${HOME}/.ssh:${HOME}/.ssh:ro" )
 	fi
 
+	# Ubuntu/Debian rootfs use host Docker/buildx (same-path repo mount so
+	# buildx -o dest=... and docker -v paths resolve on the daemon).
+	if [ -S /var/run/docker.sock ]; then
+		docker_opts+=( -v /var/run/docker.sock:/var/run/docker.sock )
+		local sock_gid docker_bin plugindir
+		sock_gid=$(stat -c '%g' /var/run/docker.sock 2>/dev/null) || sock_gid=
+		[ -n "$sock_gid" ] && docker_opts+=( --group-add "$sock_gid" )
+		docker_bin=$(command -v docker) || docker_bin=
+		case "$docker_bin" in
+		'' | /snap/*) ;;
+		*)
+			[ -f "$docker_bin" ] && docker_opts+=( -v "$docker_bin:/usr/bin/docker:ro" )
+			;;
+		esac
+		for plugindir in /usr/libexec/docker/cli-plugins /usr/lib/docker/cli-plugins; do
+			[ -d "$plugindir" ] && docker_opts+=( -v "$plugindir:$plugindir:ro" )
+		done
+		if [ -n "${HOME:-}" ] && [ -d "${HOME}/.docker" ]; then
+			docker_opts+=( -v "${HOME}/.docker:${HOME}/.docker" )
+		fi
+	fi
+
 	if docker run --help 2>&1 | grep -q -- '--user'; then
 		docker_opts+=( --user "$(id -u):$(id -g)" )
 	fi

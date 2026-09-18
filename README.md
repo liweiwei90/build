@@ -103,7 +103,7 @@ OP-TEE 为**整项目可选**（默认开）。开启时启动链：`BROM → bo
 
 - **源码**：manifest 中的 **`openaw/ubuntu`** → `sources/ubuntu`（`revision=master`）。
 - **配方**：`scripts/recipes.sh` 中的 **`build_ubuntu`** / **`clean_ubuntu`**；命令行使用 **`OPENTINA_ROOTFS=ubuntu`** 时，默认组件链里的 rootfs 步骤为 **`ubuntu`** 而非 **`br2`**。
-- **构建**：在 x86 宿主机上优先调用 `sources/ubuntu/docker/build-rootfs.sh`（需本机 **Docker**）；原生 **arm64** 可设 **`OPENTINA_UBUNTU_USE_DOCKER=0`** 后直接跑 `mk-base-ubuntu.sh` / `mk-ubuntu-rootfs.sh`。
+- **构建**：优先 `sources/ubuntu/docker/build-rootfs-buildx.sh`（需本机 **Docker buildx**；`./build.sh --docker` 会把宿主机 Docker socket/CLI 挂进容器）。原生 **arm64** 可设 **`OPENTINA_UBUNTU_USE_DOCKER=0`** 后直接跑 `mk-base-ubuntu.sh` / `mk-ubuntu-rootfs.sh`。
 - **环境变量**（可选，可在板级 `config` 中 export）：**`UBUNTU_RELEASE`**（默认 `24.04`）、**`UBUNTU_ARCH`**（默认 `arm64`）、**`OPENTINA_MOTD_BANNER_FILE`**（自定义登录 ASCII/文本，见 `sources/ubuntu/readme.md`）。
 - **产物**：仓库内 `ubuntu-rootfs.ext4` 拷贝为 **`output/<BOARD>/rootfs.ext2`**，与 Buildroot 共用 **`partitions.cfg`** 的 root 分区。若已构建 **`linux`**，会把 `.staging-linux-modules` 中的 `*.ko` 叠进该镜像。
 - **示例**：`./build.sh <BOARD> ubuntu build`；仅 rootfs：`./build.sh <BOARD> ubuntu build ubuntu`。
@@ -115,7 +115,7 @@ OP-TEE 为**整项目可选**（默认开）。开启时启动链：`BROM → bo
 
 - **源码**：manifest 中的 **`openaw/debian`** → `sources/debian`（`revision=master`）。
 - **配方**：`scripts/recipes.sh` 中的 **`build_debian`** / **`clean_debian`**；**`OPENTINA_ROOTFS=debian`** 时默认组件链使用 **`debian`** 替代 **`br2`**。
-- **构建**：x86 宿主机优先 **`sources/debian/docker/build-rootfs.sh`**（默认 **`MAKE_EXT4=1`**）；原生 arm64 可 **`OPENTINA_DEBIAN_USE_DOCKER=0`** 后执行 **`mk-lite-rootfs.sh`**。
+- **构建**：优先 **`sources/debian/docker/build-rootfs-buildx.sh`**（需本机 **Docker buildx**；`./build.sh --docker` 同样挂宿主机 Docker）；原生 arm64 可 **`OPENTINA_DEBIAN_USE_DOCKER=0`** 后执行 **`mk-lite-rootfs.sh`**。
 - **环境变量**（可选）：**`DEBIAN_RELEASE`**（默认 **`trixie`**，亦可用 **`bookworm`**）、**`DEBIAN_ARCH`**（默认 **`arm64`**）、**`ROOTFS_EXT4_MB`**、**`DEBIAN_MIRROR`** 等（见 `sources/debian/readme.md`）。
 - **产物**：`sources/debian/out/debian-*-lite-*.ext4`（取最新）拷贝为 **`output/<BOARD>/rootfs.ext2`**。若已构建 **`linux`**，同样叠入 staged `*.ko`。
 - **示例**：`./build.sh <BOARD> debian build`；仅 rootfs：`./build.sh <BOARD> debian build debian`。
@@ -277,7 +277,7 @@ export OPENTINA_DOCKER=1
 | `OPENTINA_DOCKER_IMAGE` | 默认 `opentina-buildenv:24.04`；镜像不存在或 `docker/Dockerfile` 更新后，由 `scripts/docker-exec.sh` 执行 `docker build`。 |
 | `OPENTINA_DOCKER_HOSTNAME` | 容器主机名（提示符里 `@` 之后），默认 **`opentina`**。 |
 
-容器内会设置 **`OPENTINA_IN_DOCKER=1`**，避免重复套 Docker。  
+容器内会设置 **`OPENTINA_IN_DOCKER=1`**，避免 `build.sh` 再套一层容器。若宿主机有 `/var/run/docker.sock`，`docker-exec.sh` 会把它和宿主机 `docker` CLI / buildx 插件挂进容器，这样 **`ubuntu` / `debian` rootfs** 仍可走宿主机 Docker buildx（仓库以**相同路径** bind-mount，buildx 输出路径才能对上）。  
 需要 **`git@` 克隆**时，宿主机上建议配置 SSH agent 或挂载密钥；`docker-exec.sh` 会尝试传递 `SSH_AUTH_SOCK` 与只读挂载 `~/.ssh`。
 
 ---

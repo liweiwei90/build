@@ -402,6 +402,43 @@ _require_buildx_for_oem() {
 	error "OEM injection (OPENTINA_OEM_DIR=$OPENTINA_OEM_DIR) requires the buildx path; the current fallback does not honour it. Install docker buildx or unset OPENTINA_OEM_DIR."
 }
 
+# Docker/buildx RUN on a foreign-arch image needs qemu binfmt with the F
+# (fix_binary) flag. Distro qemu-user-binfmt registers without F (interpreter
+# path must exist inside the target image) → "exec /bin/sh: no such file or
+# directory". tonistiigi/binfmt --install is a no-op if any qemu-$arch entry
+# already exists, so uninstall first.
+_ensure_qemu_binfmt_f() {
+	local arch="${1:-arm64}" qemu_arch image hostm
+	[ "${QEMU_BINFMT_SETUP:-1}" = "0" ] && return 0
+	command -v docker >/dev/null 2>&1 || return 0
+
+	hostm="$(uname -m)"
+	case "$hostm" in
+	x86_64 | amd64)
+		[ "$arch" = "amd64" ] && return 0
+		;;
+	aarch64 | arm64)
+		case "$arch" in arm64 | aarch64) return 0 ;; esac
+		;;
+	esac
+	case "$arch" in
+	arm64 | aarch64) qemu_arch=aarch64 ;;
+	armhf | arm) qemu_arch=arm ;;
+	*) return 0 ;;
+	esac
+
+	if [ -e "/proc/sys/fs/binfmt_misc/qemu-${qemu_arch}" ] &&
+		grep -q '^flags:.*F' "/proc/sys/fs/binfmt_misc/qemu-${qemu_arch}"; then
+		return 0
+	fi
+
+	image="${QEMU_BINFMT_IMAGE:-tonistiigi/binfmt:latest}"
+	echo "==> qemu binfmt for $arch lacks F flag; reinstalling via $image"
+	docker run --rm --privileged "$image" --uninstall "qemu-${qemu_arch}" >/dev/null || true
+	docker run --rm --privileged "$image" --install "$arch" \
+		|| error "failed to register qemu binfmt for $arch (docker --privileged required)"
+}
+
 # Ubuntu rootfs (ubuntu component — OPENTINA_ROOTFS=ubuntu CLI token).
 ubuntuPath="$sdkRoot/ubuntu"
 build_ubuntu() {
@@ -423,14 +460,15 @@ build_ubuntu() {
 	cd "$ubuntuPath"
 
 	# Same preference order as build_debian: buildx -> classic docker -> native.
+	# Host docker is OK inside --docker: docker-exec.sh bind-mounts the socket
+	# and CLI so this talks to the host engine (not a nested daemon).
 	if command -v docker >/dev/null 2>&1 &&
 		docker buildx version >/dev/null 2>&1 &&
-		[ "${OPENTINA_UBUNTU_USE_BUILDX:-1}" != "0" ] &&
-		[ -z "${OPENTINA_IN_DOCKER:-}" ]; then
+		[ "${OPENTINA_UBUNTU_USE_BUILDX:-1}" != "0" ]; then
+		_ensure_qemu_binfmt_f "$arch"
 		DESKTOP="$desktop" MAKE_EXT4=1 ARCH="$arch" ./docker/build-rootfs-buildx.sh "$release" || error "Ubuntu $profile rootfs (buildx) failed"
 	elif command -v docker >/dev/null 2>&1 &&
-		[ "${OPENTINA_UBUNTU_USE_DOCKER:-1}" != "0" ] &&
-		[ -z "${OPENTINA_IN_DOCKER:-}" ]; then
+		[ "${OPENTINA_UBUNTU_USE_DOCKER:-1}" != "0" ]; then
 		[ "$profile" = lite ] || error "Ubuntu desktop profile requires the buildx path."
 		_require_buildx_for_oem
 		ARCH="$arch" ./docker/build-rootfs.sh "$release" || error "Ubuntu rootfs (docker) failed"
@@ -440,7 +478,7 @@ build_ubuntu() {
 		UBUNTU_RELEASE="$release" ./mk-base-ubuntu.sh "$arch" || error "mk-base-ubuntu.sh failed"
 		./mk-ubuntu-rootfs.sh "$arch" || error "mk-ubuntu-rootfs.sh failed"
 	else
-		error "Ubuntu rootfs on $(uname -m) needs Docker on the host (sources/ubuntu/docker/build-rootfs-buildx.sh or build-rootfs.sh). On native arm64 without Docker, install binfmt-support qemu-user-static and set OPENTINA_UBUNTU_USE_DOCKER=0."
+		error "Ubuntu rootfs on $(uname -m) needs Docker on the host (sources/ubuntu/docker/build-rootfs-buildx.sh or build-rootfs.sh). With --docker, /var/run/docker.sock must be available on the host. On native arm64 without Docker, install binfmt-support qemu-user-static and set OPENTINA_UBUNTU_USE_DOCKER=0."
 	fi
 
 	# Select only the requested buildx profile; taking the newest arbitrary ext4
@@ -488,15 +526,15 @@ build_debian() {
 
 	# Prefer buildx: pure Dockerfile.rootfs + BuildKit, no debootstrap / privileged
 	# / qemu binfmt setup loop. Falls back to docker/build-rootfs.sh (debootstrap),
-	# then to native mk-lite-rootfs.sh on arm64 hosts.
+	# then to native mk-lite-rootfs.sh on arm64 hosts. Host docker is OK inside
+	# --docker (socket + CLI bind-mounted; see build_ubuntu).
 	if command -v docker >/dev/null 2>&1 &&
 		docker buildx version >/dev/null 2>&1 &&
-		[ "${OPENTINA_DEBIAN_USE_BUILDX:-1}" != "0" ] &&
-		[ -z "${OPENTINA_IN_DOCKER:-}" ]; then
+		[ "${OPENTINA_DEBIAN_USE_BUILDX:-1}" != "0" ]; then
+		_ensure_qemu_binfmt_f "$arch"
 		DESKTOP="$desktop" BASE_FLAVOR="$base_flavor" HOSTNAME="debian-$profile" SERIAL_FIX="${OPENTINA_DEBIAN_SERIAL_FIX:-0}" MAKE_EXT4=1 ARCH="$arch" ./docker/build-rootfs-buildx.sh "$release" || error "Debian $profile rootfs (buildx) failed"
 	elif command -v docker >/dev/null 2>&1 &&
-		[ "${OPENTINA_DEBIAN_USE_DOCKER:-1}" != "0" ] &&
-		[ -z "${OPENTINA_IN_DOCKER:-}" ]; then
+		[ "${OPENTINA_DEBIAN_USE_DOCKER:-1}" != "0" ]; then
 		[ "$profile" = lite ] || error "Debian desktop profile requires the buildx path."
 		_require_buildx_for_oem
 		MAKE_EXT4=1 ARCH="$arch" ./docker/build-rootfs.sh "$release" || error "Debian rootfs (docker) failed"
@@ -505,7 +543,7 @@ build_debian() {
 		_require_buildx_for_oem
 		MAKE_EXT4=1 ARCH="$arch" ./mk-lite-rootfs.sh "$release" || error "mk-lite-rootfs.sh failed"
 	else
-		error "Debian rootfs on $(uname -m) needs Docker on the host (sources/debian/docker/build-rootfs-buildx.sh or build-rootfs.sh). On native arm64 without Docker, install debootstrap qemu-user-static and set OPENTINA_DEBIAN_USE_DOCKER=0."
+		error "Debian rootfs on $(uname -m) needs Docker on the host (sources/debian/docker/build-rootfs-buildx.sh or build-rootfs.sh). With --docker, /var/run/docker.sock must be available on the host. On native arm64 without Docker, install debootstrap qemu-user-static and set OPENTINA_DEBIAN_USE_DOCKER=0."
 	fi
 
 	local img
