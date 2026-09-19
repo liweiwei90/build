@@ -18,7 +18,18 @@ if ! command -v docker >/dev/null 2>&1; then
 	exit 127
 fi
 
-if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+opentina_docker_image_stale() {
+	if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+		return 0
+	fi
+	# Rebuild when docker/Dockerfile is newer than the existing image.
+	local df_mtime img_epoch
+	df_mtime=$(stat -c %Y "$DOCKERFILE" 2>/dev/null) || return 1
+	img_epoch=$(date -u -d "$(docker image inspect -f '{{.Created}}' "$IMAGE")" +%s 2>/dev/null) || return 1
+	[ "$df_mtime" -gt "$img_epoch" ]
+}
+
+if opentina_docker_image_stale; then
 	echo "Building Docker image $IMAGE (Ubuntu 24.04 build env) ..."
 	docker build -t "$IMAGE" -f "$DOCKERFILE" "$CTX_DIR"
 fi
@@ -38,6 +49,10 @@ opentina_docker_opts() {
 		-e "OPENTINA_OPTEE=${OPENTINA_OPTEE:-}"
 		-e "JOBS=${JOBS:-}"
 		-e "TERM=${TERM:-dumb}"
+		# BitBake (and similar) call unshare(CLONE_NEWUSER). Docker's
+		# default seccomp profile blocks that even when the host
+		# kernel.apparmor_restrict_unprivileged_userns=0.
+		--security-opt seccomp=unconfined
 	)
 
 	if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "$SSH_AUTH_SOCK" ]; then
@@ -45,6 +60,28 @@ opentina_docker_opts() {
 	fi
 	if [ -d "${HOME}/.ssh" ]; then
 		docker_opts+=( -v "${HOME}/.ssh:${HOME}/.ssh:ro" )
+	fi
+
+	# Ubuntu/Debian rootfs use host Docker/buildx (same-path repo mount so
+	# buildx -o dest=... and docker -v paths resolve on the daemon).
+	if [ -S /var/run/docker.sock ]; then
+		docker_opts+=( -v /var/run/docker.sock:/var/run/docker.sock )
+		local sock_gid docker_bin plugindir
+		sock_gid=$(stat -c '%g' /var/run/docker.sock 2>/dev/null) || sock_gid=
+		[ -n "$sock_gid" ] && docker_opts+=( --group-add "$sock_gid" )
+		docker_bin=$(command -v docker) || docker_bin=
+		case "$docker_bin" in
+		'' | /snap/*) ;;
+		*)
+			[ -f "$docker_bin" ] && docker_opts+=( -v "$docker_bin:/usr/bin/docker:ro" )
+			;;
+		esac
+		for plugindir in /usr/libexec/docker/cli-plugins /usr/lib/docker/cli-plugins; do
+			[ -d "$plugindir" ] && docker_opts+=( -v "$plugindir:$plugindir:ro" )
+		done
+		if [ -n "${HOME:-}" ] && [ -d "${HOME}/.docker" ]; then
+			docker_opts+=( -v "${HOME}/.docker:${HOME}/.docker" )
+		fi
 	fi
 
 	if docker run --help 2>&1 | grep -q -- '--user'; then
