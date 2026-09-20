@@ -12,6 +12,9 @@ sdkRoot="$OPENTINA_BUILD_ROOT/sources"
 export sdkRoot
 
 # --- Optional leading flags (stripped before board/init/targets parsing) ---
+# --docker is host-only. --optee/--no-optee are exported and re-passed into the
+# container; a non-exported shell assignment would be lost at exec docker-exec.sh.
+optee_cli_flags=()
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--docker-shell)
@@ -25,10 +28,14 @@ while [ $# -gt 0 ]; do
 		;;
 	--optee)
 		OPENTINA_OPTEE=1
+		export OPENTINA_OPTEE
+		optee_cli_flags+=(--optee)
 		shift
 		;;
 	--no-optee)
 		OPENTINA_OPTEE=0
+		export OPENTINA_OPTEE
+		optee_cli_flags+=(--no-optee)
 		shift
 		;;
 	*)
@@ -58,7 +65,7 @@ fi
 if [ -z "${OPENTINA_SKIP_DOCKER:-}" ] && [ -z "${OPENTINA_IN_DOCKER:-}" ] && [ ! -e /.dockerenv ] &&
 	[ -n "${OPENTINA_DOCKER:-}" ] && [ "${OPENTINA_DOCKER}" != "0" ] &&
 	command -v docker >/dev/null 2>&1; then
-	exec "$OPENTINA_BUILD_ROOT/scripts/docker-exec.sh" "$@"
+	exec "$OPENTINA_BUILD_ROOT/scripts/docker-exec.sh" "${optee_cli_flags[@]}" "$@"
 fi
 
 if [ -n "${OPENTINA_DOCKER:-}" ] && [ "${OPENTINA_DOCKER}" != "0" ] &&

@@ -264,14 +264,12 @@ jobs:
             [ -f "$img" ] || continue
             echo "xz $name sdcard.img"
             xz -T0 -c "$img" > "release/${name}-sdcard.img.xz"
-            cp -a "$dir/SHA256SUMS" "release/${name}-SHA256SUMS.txt"
-            cp -a "$dir/OPTEE.txt" "release/${name}-OPTEE.txt"
           done
           [ -n "$(ls -A release 2>/dev/null)" ] || {
             echo "no image artifacts to publish" >&2
             exit 1
           }
-          (cd release && sha256sum *-sdcard.img.xz *-SHA256SUMS.txt *-OPTEE.txt > SHA256SUMS)
+          (cd release && sha256sum *-sdcard.img.xz > SHA256SUMS)
           ls -lh release
 
           python3 <<'PY'
