@@ -201,6 +201,9 @@ jobs:
           ./build.sh ${{ matrix.tee_flag }} "${{ matrix.board }}" "${{ matrix.rootfs }}" build
           printf '%s\n' "${{ matrix.tee }}" > "output/${{ matrix.board }}/OPTEE.txt"
 
+      - name: Record source revisions
+        run: ./scripts/source-revs.sh | tee "output/${{ matrix.board }}/SOURCE_REVS.txt"
+
       - name: Checksums
         run: |
           out="output/${{ matrix.board }}"
@@ -222,7 +225,7 @@ jobs:
           dst="${{ runner.temp }}/image-artifact"
           mkdir -p "$dst"
           cp -a "$src/sdcard.img" "$src/SHA256SUMS" "$src/OPTEE.txt" \
-            "$src/u-boot.fex" "$src/Image.gz" "$dst/"
+            "$src/SOURCE_REVS.txt" "$src/u-boot.fex" "$src/Image.gz" "$dst/"
           cp -a "$src"/*.dtb "$dst/"
           if [ "${{ matrix.tee }}" = optee ]; then
             cp -a "$src/tee.bin" "$dst/"
@@ -274,6 +277,7 @@ jobs:
 
           python3 <<'PY'
           import json, os
+          from collections import OrderedDict
           from pathlib import Path
 
           rows = json.loads(os.environ["MATRIX_JSON"])["include"]
@@ -294,6 +298,81 @@ jobs:
 
           def combo(row: dict) -> str:
               return f"`{row['board']}` / {row['rootfs']} / {row['tee']}"
+
+          def parse_revs(text: str):
+              out = []
+              for line in text.splitlines():
+                  if not line.strip() or line.startswith("#"):
+                      continue
+                  parts = line.split("\t")
+                  if len(parts) < 5:
+                      continue
+                  out.append(
+                      {
+                          "path": parts[0],
+                          "commit": parts[1],
+                          "abbrev": parts[2],
+                          "ref": parts[3],
+                          "url": parts[4],
+                      }
+                  )
+              return out
+
+          def github_urls(url: str, sha: str):
+              raw = (url or "").strip()
+              if raw.startswith("git@github.com:"):
+                  path = raw[len("git@github.com:") :]
+              elif "github.com/" in raw:
+                  path = raw.split("github.com/", 1)[1]
+              else:
+                  return None, None
+              path = path.removesuffix(".git").strip("/")
+              repo_url = f"https://github.com/{path}"
+              return repo_url, f"{repo_url}/commit/{sha}"
+
+          by_path = OrderedDict()
+          for revs_file in sorted(Path("artifacts").glob("*/SOURCE_REVS.txt")):
+              job = revs_file.parent.name
+              for rec in parse_revs(revs_file.read_text(encoding="utf-8")):
+                  slot = by_path.setdefault(rec["path"], OrderedDict())
+                  entry = slot.setdefault(
+                      rec["commit"],
+                      {
+                          "abbrev": rec["abbrev"],
+                          "ref": rec["ref"],
+                          "url": rec["url"],
+                          "jobs": [],
+                      },
+                  )
+                  entry["jobs"].append(job)
+
+          merged_lines = [
+              "# Merged source revisions from image jobs.",
+              "# path	commit	abbrev	ref	url",
+          ]
+          mismatched = []
+          source_rows = []
+          for path, commits in by_path.items():
+              if len(commits) > 1:
+                  mismatched.append(path)
+              for commit, meta in commits.items():
+                  merged_lines.append(
+                      "\t".join(
+                          [path, commit, meta["abbrev"], meta["ref"], meta["url"]]
+                      )
+                  )
+                  repo_url, commit_url = github_urls(meta["url"], commit)
+                  tree = f"[`{path}`]({repo_url})" if repo_url else f"`{path}`"
+                  sha = (
+                      f"[`{meta['abbrev']}`]({commit_url})"
+                      if commit_url
+                      else f"`{meta['abbrev']}`"
+                  )
+                  source_rows.append((tree, meta["ref"], sha, len(commits) > 1))
+          if by_path:
+              Path("release/SOURCE_REVS.txt").write_text(
+                  "\n".join(merged_lines) + "\n", encoding="utf-8"
+              )
 
           lines = [
               f"OpenTina images for tag `{tag}`.",
@@ -318,6 +397,28 @@ jobs:
           if missing_rows:
               lines += ["", "### Missing (job failed or produced no image)", ""]
               lines += [f"- {combo(row)}" for row in missing_rows]
+          if source_rows:
+              lines += [
+                  "",
+                  "### Source revisions",
+                  "",
+                  "Git commits used by the image jobs (`./build.sh init` / the default source manifest).",
+                  "",
+              ]
+              if mismatched:
+                  names = ", ".join(f"`{p}`" for p in mismatched)
+                  lines += [
+                      f"> **Mismatched clones:** {names} were not the same commit in every image job. "
+                      "See `SOURCE_REVS.txt`.",
+                      "",
+                  ]
+              lines += [
+                  "| Tree | Ref | Commit |",
+                  "| --- | --- | --- |",
+              ]
+              for tree, ref, sha, _conflict in source_rows:
+                  lines.append(f"| {tree} | `{ref}` | {sha} |")
+              lines += ["", "Full listing: `SOURCE_REVS.txt`.", ""]
           lines += [
               "",
               "Each `*-sdcard.img.xz` is one board × rootfs × OP-TEE image. "
