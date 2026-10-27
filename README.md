@@ -209,6 +209,7 @@ OP-TEE 为**整项目可选**（默认开）。开启时启动链：`BROM → bo
 | `./build.sh` | 无参数：列出板子与 rootfs 类型，并提示常用命令。 |
 | `./build.sh targets` 或 `./build.sh list` | 同上列表，仅打印后退出。 |
 | `./build.sh init [MANIFEST_XML]` | 按 XML 清单克隆/跳过已有仓库到 `sources/`（默认 `scripts/opentina-manifest.xml`）。 |
+| `./build.sh update [MANIFEST_XML]` | 当前分支与清单 `revision` 相同的仓库快进到 GitHub 上该分支最新提交；分支不同（含游离 HEAD）的仓库只打印、不改动。 |
 | `./build.sh <BOARD_NAME> build [COMPONENT…]` | 构建；未写 `COMPONENT` 时按顺序构建全部组件。 |
 | `./build.sh <BOARD_NAME> clean [COMPONENT…]` | 清理对应组件及 `.done` 标记。 |
 | `./build.sh <BOARD_NAME> <ROOTFS> build …` | 显式指定 rootfs 后再 `build` / `clean`（见下表）。 |
@@ -313,6 +314,16 @@ export OPENTINA_DOCKER=1
 ```bash
 ./scripts/repo_clone.sh --sync ./scripts/opentina-manifest.xml
 ```
+
+按清单分支更新已有检出（不切换分支）：
+
+```bash
+./build.sh update
+# 等价于 ./scripts/repo_clone.sh --update ./scripts/opentina-manifest.xml
+```
+
+- 本地当前分支与清单 `revision` 相同：`git fetch` 后 `git merge --ff-only origin/<revision>`，更新到 GitHub 该分支最新提交。不能快进（本地有分叉提交或工作区挡住合并）时跳过并记为失败，不改历史。
+- 本地在其他分支，或游离 HEAD：不 fetch、不 checkout，结束时按 `path / local / manifest` 列出来。
 
 ---
 

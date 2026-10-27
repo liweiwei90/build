@@ -172,6 +172,10 @@ usage() {
 	echo "  ./build.sh init [MANIFEST_XML]"
 	echo "      Clone sources (default: scripts/opentina-manifest.xml)"
 	echo
+	echo "  ./build.sh update [MANIFEST_XML]"
+	echo "      Fast-forward sources already on the manifest branch to origin."
+	echo "      Repos on another branch are listed and left unchanged."
+	echo
 	echo "  ./build.sh <BOARD_NAME> <build|clean> [COMPONENT]"
 	echo "  ./build.sh <BOARD_NAME> <ROOTFS> <build|clean> [COMPONENT]"
 	echo "      ROOTFS: buildroot (default if omitted), debian, ubuntu, yocto, openwrt"
@@ -211,6 +215,17 @@ if [ "${1:-}" = init ]; then
 	fi
 	[ -f "$manifest" ] || error "Manifest not found: $manifest"
 	exec "$OPENTINA_BUILD_ROOT/scripts/repo_clone.sh" --gitclone "$manifest"
+fi
+
+if [ "${1:-}" = update ]; then
+	shift
+	if [ "${1:-}" ]; then
+		manifest="$(realpath -- "$1")"
+	else
+		manifest="$(realpath -- "$OPENTINA_BUILD_ROOT/scripts/opentina-manifest.xml")"
+	fi
+	[ -f "$manifest" ] || error "Manifest not found: $manifest"
+	exec "$OPENTINA_BUILD_ROOT/scripts/repo_clone.sh" --update "$manifest"
 fi
 
 boardName="$1"

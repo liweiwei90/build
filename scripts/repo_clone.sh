@@ -6,6 +6,11 @@
 # Usage:
 #   ./scripts/repo_clone.sh --gitclone scripts/opentina-manifest.xml
 #   ./scripts/repo_clone.sh --sync scripts/opentina-manifest.xml
+#   ./scripts/repo_clone.sh --update scripts/opentina-manifest.xml
+#
+# --update fast-forwards checkouts whose current branch matches the manifest
+# revision to that branch on origin. Checkouts on another branch (or detached
+# HEAD) are left untouched and printed at the end.
 #
 # Manifest: optional clone-depth on <manifest> (default for all projects) or
 # on <project clone-depth="N"> (overrides). Omit or empty: full history clone.
@@ -18,7 +23,7 @@
 set -euo pipefail
 
 usage() {
-	echo "Usage: $0 --gitclone|--sync <manifest.xml>" 1>&2
+	echo "Usage: $0 --gitclone|--sync|--update <manifest.xml>" 1>&2
 	exit 1
 }
 
@@ -29,7 +34,7 @@ shift
 manifest="$(realpath "$1")"
 
 case "$mode" in
---gitclone | --sync) ;;
+--gitclone | --sync | --update) ;;
 *) usage ;;
 esac
 
@@ -130,6 +135,92 @@ yellow() {
 	printf "\033[33m%s\033[39m\n" "$1"
 }
 
+red() {
+	printf "\033[31m%s\033[39m\n" "$1"
+}
+
+# Filled by --update. Different-branch rows are path<TAB>local<TAB>manifest.
+different=()
+update_failed=()
+updated=0
+uptodate=0
+
+# Fast-forward a checkout that is already on the manifest branch.
+# Other branches are recorded and left unchanged.
+_update_one() {
+	local relpath=$1 dest=$2 revision=$3
+	local branch sha before after
+
+	if ! branch=$(git -C "$dest" symbolic-ref --short HEAD 2>/dev/null); then
+		sha=$(git -C "$dest" rev-parse --short HEAD 2>/dev/null || echo unknown)
+		different+=("${relpath}"$'\t'"detached@${sha}"$'\t'"${revision}")
+		yellow "skip (different branch): $relpath (detached@${sha}, manifest=${revision})"
+		return 0
+	fi
+	if [ "$branch" != "$revision" ]; then
+		different+=("${relpath}"$'\t'"${branch}"$'\t'"${revision}")
+		yellow "skip (different branch): $relpath (local=${branch}, manifest=${revision})"
+		return 0
+	fi
+
+	blue "update $relpath ($revision)"
+	before=$(git -C "$dest" rev-parse --short HEAD)
+	if ! git -C "$dest" fetch origin "$revision"; then
+		update_failed+=("${relpath}"$'\t'"fetch failed")
+		red "fetch failed: $relpath"
+		return 0
+	fi
+	if ! git -C "$dest" rev-parse --verify --quiet "origin/${revision}^{commit}" >/dev/null; then
+		update_failed+=("${relpath}"$'\t'"origin/${revision} missing after fetch")
+		red "origin/${revision} missing after fetch: $relpath"
+		return 0
+	fi
+	if ! git -C "$dest" -c advice.diverging=false merge --ff-only "origin/${revision}"; then
+		update_failed+=("${relpath}"$'\t'"not fast-forward")
+		red "not fast-forward, left unchanged: $relpath"
+		return 0
+	fi
+	after=$(git -C "$dest" rev-parse --short HEAD)
+	if [ "$before" = "$after" ]; then
+		uptodate=$((uptodate + 1))
+		blue "up to date: $relpath ($revision @ ${after})"
+	else
+		updated=$((updated + 1))
+		blue "updated: $relpath ($revision) ${before} -> ${after}"
+	fi
+}
+
+_print_update_summary() {
+	local row path local_rev manifest_rev reason
+
+	echo
+	blue "Update summary: ${updated} updated, ${uptodate} already up to date, ${#different[@]} different branch, ${#update_failed[@]} failed"
+	if [ "${#different[@]}" -gt 0 ]; then
+		echo
+		yellow "Different branch (not updated):"
+		printf "  %-24s %-28s %s\n" "path" "local" "manifest"
+		for row in "${different[@]}"; do
+			IFS="$(printf '\t')" read -r path local_rev manifest_rev <<<"$row"
+			printf "  %-24s %-28s %s\n" "$path" "$local_rev" "$manifest_rev"
+		done
+	else
+		echo
+		blue "Different branch: none"
+	fi
+	if [ "${#update_failed[@]}" -gt 0 ]; then
+		echo
+		red "Failed:"
+		for row in "${update_failed[@]}"; do
+			IFS="$(printf '\t')" read -r path reason <<<"$row"
+			printf "  %s: %s\n" "$path" "$reason"
+		done
+	fi
+}
+
+if [ "$mode" = "--update" ]; then
+	export GIT_TERMINAL_PROMPT=0
+fi
+
 while IFS="$(printf '\t')" read -r relpath url revision clone_depth; do
 	[ "$relpath" ] || continue
 	dest="$OPENTINA_SOURCES_DIR/$relpath"
@@ -149,6 +240,12 @@ while IFS="$(printf '\t')" read -r relpath url revision clone_depth; do
 		else
 			git clone --branch "$revision" "$url" "$dest"
 		fi
+	elif [ "$mode" = "--update" ]; then
+		if ! [ -d "$dest/.git" ]; then
+			yellow "skip update (not a git repo): $relpath"
+			continue
+		fi
+		_update_one "$relpath" "$dest" "$revision"
 	else
 		if ! [ -d "$dest/.git" ]; then
 			yellow "skip sync (not a git repo): $relpath"
@@ -160,5 +257,12 @@ while IFS="$(printf '\t')" read -r relpath url revision clone_depth; do
 		git -C "$dest" pull --ff-only || true
 	fi
 done < <(_manifest_records)
+
+if [ "$mode" = "--update" ]; then
+	_print_update_summary
+	if [ "${#update_failed[@]}" -gt 0 ]; then
+		exit 1
+	fi
+fi
 
 blue "Done ($mode). Sources: $OPENTINA_SOURCES_DIR"
