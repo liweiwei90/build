@@ -90,6 +90,7 @@ OP-TEE 为**整项目可选**（默认开）。开启时启动链：`BROM → bo
 ## Buildroot（组件 `br2`）
 
 - **配方位置**：`scripts/recipes.sh` 中的 **`build_br2`** / **`clean_br2`**（组件名用 **`br2`**，避免与命令行 **`OPENTINA_ROOTFS=buildroot`** 混淆）。
+- **profile**：`./build.sh --profile lite|hmi <BOARD> build`（默认 **`lite`**）。**`hmi`** 在板级 defconfig 上合并 `configs/common/br2-hmi.fragment`。等价环境变量 **`OPENTINA_BR2_PROFILE`**；命令行优先。
 - **板级变量**：`configs/<板>/config` 里 **`BUILDROOT_DEFCONFIG`**（默认 `br2_opentina.defconfig`，与 `config` 同目录）。
 - **defconfig 模板**：`configs/*/br2_opentina.defconfig` — AArch64 + Bootlin 外部工具链 + **无内核**（内核由本仓库 `linux` 组件构建）+ **ext2 rootfs**；busybox init（无 systemd），带 openssh / curl / python3 等调试工具，root 密码 `root`（`configs/common/br2-post-build.sh` 放开 SSH root 密码登录）。**OP-TEE 开启时**再编用户态 4.6.0（`BR2_PACKAGE_OPTEE_CLIENT` / `OPTEE_TEST` / `OPTEE_EXAMPLES`；`libteec`、`tee-supplicant`，SysV `S30tee-supplicant`；`xtest` / `optee_example_*` 的 TA 由 buildroot 自己的 TA devkit 编——devkit 只能由 **`BR2_TARGET_OPTEE_OS`** 产出，故该项开启但 **`_CORE=n`**，只出 devkit、不产与 `optee` 组件竞争的 `tee.bin`；`_SERVICES=n` 让 avb / pkcs11 等 in-tree service TA 不进 rootfs。optee_os 用 **`_CUSTOM_TARBALL`** pin 到 manifest 同一 commit，client / test / examples pin 到 4.6.0 tarball，hash 放在 `configs/common/br2-global-patches/`——不 pin 的话 buildroot 默认拉 4.9.0，与 4.6.0 的安全核错配）。BL32 仍由 **`optee`** 组件构建。**关闭 OP-TEE** 时配方会连 `BR2_TARGET_OPTEE_OS` 一起关掉。
 - **TA**（仅 OP-TEE 开启）：`br2-post-build.sh`（以及 ubuntu/debian/yocto/openwrt 的镜像 overlay）把 `output/<BOARD>/optee` 里 **`export-ta_*/ta/*.ta`** 装到 **`/lib/optee_armtz`**；xtest / optee-examples 的 TA 由对应 BR 包自己产出并装进同一目录，不需要先编 **`optee`**。安全存储目录 **`/data/tee`**。改过 TA 后要重编对应 rootfs 并重烧 root 分区，只烧 `u-boot.fex` 不会更新它们。
@@ -105,6 +106,7 @@ OP-TEE 为**整项目可选**（默认开）。开启时启动链：`BROM → bo
 - **配方**：`scripts/recipes.sh` 中的 **`build_ubuntu`** / **`clean_ubuntu`**；命令行使用 **`OPENTINA_ROOTFS=ubuntu`** 时，默认组件链里的 rootfs 步骤为 **`ubuntu`** 而非 **`br2`**。
 - **构建**：优先 `sources/ubuntu/docker/build-rootfs-buildx.sh`（需本机 **Docker buildx**；`./build.sh --docker` 会把宿主机 Docker socket/CLI 挂进容器）。原生 **arm64** 可设 **`OPENTINA_UBUNTU_USE_DOCKER=0`** 后直接跑 `mk-base-ubuntu.sh` / `mk-ubuntu-rootfs.sh`。
 - **环境变量**（可选，可在板级 `config` 中 export）：**`UBUNTU_RELEASE`**（默认 `24.04`）、**`UBUNTU_ARCH`**（默认 `arm64`）、**`OPENTINA_MOTD_BANNER_FILE`**（自定义登录 ASCII/文本，见 `sources/ubuntu/readme.md`）。
+- **profile**：`./build.sh --profile lite|desktop <BOARD> ubuntu build`（默认 **`lite`**）。**`desktop`** 只走 buildx。等价环境变量 **`OPENTINA_UBUNTU_PROFILE`**；命令行优先。
 - **产物**：仓库内 `ubuntu-rootfs.ext4` 拷贝为 **`output/<BOARD>/rootfs.ext2`**，与 Buildroot 共用 **`partitions.cfg`** 的 root 分区。若已构建 **`linux`**，会把 `.staging-linux-modules` 中的 `*.ko` 叠进该镜像。
 - **示例**：`./build.sh <BOARD> ubuntu build`；仅 rootfs：`./build.sh <BOARD> ubuntu build ubuntu`。
 - **内核**：`OPENTINA_ROOTFS=ubuntu` 构建 **`linux`** 时会在 `LINUX_CONFIG`（如 `a733_minimal_defconfig`）之上合并 **`configs/common/linux-systemd.fragment`**（`CONFIG_TMPFS`、`CONFIG_UNIX` 等）。精简 defconfig 单独用于 systemd 会出现 `tmpfs: Unknown parameter 'mode'`、`Failed to find module 'unix'` 并卡在 *Failed to mount API filesystems*。可用环境变量 **`LINUX_SYSTEMD_FRAGMENT`** 覆盖片段路径。
@@ -117,6 +119,7 @@ OP-TEE 为**整项目可选**（默认开）。开启时启动链：`BROM → bo
 - **配方**：`scripts/recipes.sh` 中的 **`build_debian`** / **`clean_debian`**；**`OPENTINA_ROOTFS=debian`** 时默认组件链使用 **`debian`** 替代 **`br2`**。
 - **构建**：优先 **`sources/debian/docker/build-rootfs-buildx.sh`**（需本机 **Docker buildx**；`./build.sh --docker` 同样挂宿主机 Docker）；原生 arm64 可 **`OPENTINA_DEBIAN_USE_DOCKER=0`** 后执行 **`mk-lite-rootfs.sh`**。
 - **环境变量**（可选）：**`DEBIAN_RELEASE`**（默认 **`trixie`**，亦可用 **`bookworm`**）、**`DEBIAN_ARCH`**（默认 **`arm64`**）、**`ROOTFS_EXT4_MB`**、**`DEBIAN_MIRROR`** 等（见 `sources/debian/readme.md`）。
+- **profile**：`./build.sh --profile lite|desktop <BOARD> debian build`（默认 **`lite`**）。**`desktop`** 只走 buildx。等价环境变量 **`OPENTINA_DEBIAN_PROFILE`**；命令行优先。
 - **产物**：`sources/debian/out/debian-*-lite-*.ext4`（取最新）拷贝为 **`output/<BOARD>/rootfs.ext2`**。若已构建 **`linux`**，同样叠入 staged `*.ko`。
 - **示例**：`./build.sh <BOARD> debian build`；仅 rootfs：`./build.sh <BOARD> debian build debian`。
 - **内核**：与 Ubuntu 相同，**`debian`** 构建 **`linux`** 时合并 **`linux-systemd.fragment`**。
@@ -156,7 +159,7 @@ OP-TEE 为**整项目可选**（默认开）。开启时启动链：`BROM → bo
 - **源码**：manifest 中的 **`openaw/meta-opentina`** → `sources/meta-opentina`（`revision=master`）。首次构建会由 **`opentina-build.sh`** 自动执行 **`yocto-init.sh`**，在 **`sources/yocto/`** 下拉取 Poky / meta-openembedded（体积大，见 layer 内 **README.md**）。
 - **配方**：**`build_yocto`** / **`clean_yocto`** 调用 **`sources/meta-opentina/opentina-build.sh`**；**`OPENTINA_ROOTFS=yocto`** 时默认组件链使用 **`yocto`** 替代 **`br2`**。
 - **配置**（可选，板级 `config` 或环境变量）：
-  - **`OPENTINA_YOCTO_PROFILE`**：`minimal`（默认，**`opentina-image-minimal`**）或 **`qt`**（需 **`yocto-init.sh --qt`**，**`opentina-image-qt`**）
+  - **profile**：`./build.sh --profile minimal|qt|hmi <BOARD> yocto build`（默认 **`minimal`**，**`opentina-image-minimal`**；**`qt`** 为 **`opentina-image-qt`**，需 **`yocto-init.sh --qt`**；**`hmi`** 为 **`opentina-image-hmi`**）。等价环境变量 **`OPENTINA_YOCTO_PROFILE`**；命令行优先。
   - **`YOCTO_MACHINE`** / **`OPENTINA_YOCTO_MACHINE`**：默认 **`a733-aiot`**（layer 当前机器名；与 OpenTina 板级 **`BOARD_NAME`** 独立，内核仍由本仓库 **`linux`** 组件构建）
   - **`OPENTINA_YOCTO_DIR`**：Yocto 工作区，默认 **`sources/yocto`**
 - **产物**：**`sources/yocto/build-opentina/tmp/deploy/images/<MACHINE>/opentina-image-*-<MACHINE>.ext4`** → **`output/<BOARD>/rootfs.ext2`**。若已构建 **`linux`**，叠入 staged `*.ko`。
@@ -171,7 +174,7 @@ OP-TEE 为**整项目可选**（默认开）。开启时启动链：`BROM → bo
 ## OpenWrt rootfs（组件 `openwrt`）
 
 - **源码**：manifest 中的 **`openwrt/openwrt`** → `sources/openwrt`（pin 在 **`openwrt-25.12`** 稳定分支，`clone-depth=1`）。也可设环境变量 **`OPENTINA_OPENWRT_DIR`** 指向本地已有的 OpenWrt 树（如已预热 `build_dir/` 的 fork），跳过 manifest 克隆。
-- **配方**：`scripts/recipes.sh` 中的 **`build_openwrt`** / **`clean_openwrt`**；**`OPENTINA_ROOTFS=openwrt`** 时默认组件链使用 **`openwrt`** 替代 **`br2`**。
+- **配方**：`scripts/recipes.sh` 中的 **`build_openwrt`** / **`clean_openwrt`**；**`OPENTINA_ROOTFS=openwrt`** 时默认组件链使用 **`openwrt`** 替代 **`br2`**。OpenWrt 只有一份板级 config，**`--profile` 会直接报错**。
 - **定位**：OpenWrt 只作为 **rootfs 供应商**——boot 链（ATF / U-Boot / 内核 / dtb，以及可选的 OP-TEE）全部复用本仓库组件；OpenWrt 自产的内核、kmod 与 per-device 镜像全部丢弃，只消费 target 级 **`openwrt-*-rootfs.tar.gz`**。
 - **OpenWrt 补丁**：先应用 `configs/common/openwrt-patches/*.patch`，再应用 `configs/<board>/openwrt-patches/*.patch`；每组内按字典序 `git apply` 到 OpenWrt 树（应用前先把补丁涉及文件 reset 回 HEAD，保证可重复执行）。
 - **配置**（板级 `config`）：
@@ -198,7 +201,8 @@ OP-TEE 为**整项目可选**（默认开）。开启时启动链：`BROM → bo
 
 所有子命令前可重复加 **`--docker`**（等价于本次执行启用容器），或单独使用 **`--docker-shell`**（见下文「Docker」）。  
 **`--optee` / `--no-optee`** 同样写在子命令之前，控制整条链是否编 OP-TEE（见下节）。  
-**这些前缀必须出现在子命令之前**（解析后会被剥掉，再按下面语法处理）。
+**`--profile <NAME>`** 也写在子命令之前，按当前 rootfs 写入对应变量（见下表）。OpenWrt 没有 profile。  
+**这些前缀必须出现在子命令之前**（解析后会被剥掉，再按下面语法处理）。`--docker` 会把 `--profile` 原样传进容器。
 
 | 用法 | 说明 |
 |------|------|
@@ -208,6 +212,19 @@ OP-TEE 为**整项目可选**（默认开）。开启时启动链：`BROM → bo
 | `./build.sh <BOARD_NAME> build [COMPONENT…]` | 构建；未写 `COMPONENT` 时按顺序构建全部组件。 |
 | `./build.sh <BOARD_NAME> clean [COMPONENT…]` | 清理对应组件及 `.done` 标记。 |
 | `./build.sh <BOARD_NAME> <ROOTFS> build …` | 显式指定 rootfs 后再 `build` / `clean`（见下表）。 |
+| `./build.sh --profile <NAME> <BOARD_NAME> [ROOTFS] build …` | 选择该 rootfs 的 profile。 |
+
+**`--profile` 与各 rootfs**
+
+| ROOTFS | `--profile` | 默认 | 写入 |
+|--------|-------------|------|------|
+| `buildroot`（可省略） | `lite`、`hmi` | `lite` | `OPENTINA_BR2_PROFILE` |
+| `ubuntu` | `lite`、`desktop` | `lite` | `OPENTINA_UBUNTU_PROFILE` |
+| `debian` | `lite`、`desktop` | `lite` | `OPENTINA_DEBIAN_PROFILE` |
+| `yocto` | `minimal`、`qt`、`hmi` | `minimal` | `OPENTINA_YOCTO_PROFILE` |
+| `openwrt` | 不支持 | — | — |
+
+已导出的同名环境变量在未写 `--profile` 时仍然生效；写了 `--profile` 时以命令行为准。
 
 **第一参数 `BOARD_NAME`**
 

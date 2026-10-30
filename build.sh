@@ -12,9 +12,10 @@ sdkRoot="$OPENTINA_BUILD_ROOT/sources"
 export sdkRoot
 
 # --- Optional leading flags (stripped before board/init/targets parsing) ---
-# --docker is host-only. --optee/--no-optee are exported and re-passed into the
+# --docker is host-only. --optee/--no-optee and --profile are re-passed into the
 # container; a non-exported shell assignment would be lost at exec docker-exec.sh.
 optee_cli_flags=()
+profile_cli_flags=()
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--docker-shell)
@@ -36,6 +37,24 @@ while [ $# -gt 0 ]; do
 		OPENTINA_OPTEE=0
 		export OPENTINA_OPTEE
 		optee_cli_flags+=(--no-optee)
+		shift
+		;;
+	--profile)
+		if [ $# -lt 2 ] || [ -z "${2:-}" ] || [ "${2#-}" != "$2" ]; then
+			echo "--profile needs a name (buildroot: lite|hmi; ubuntu/debian: lite|desktop; yocto: minimal|qt|hmi)." >&2
+			exit 1
+		fi
+		OPENTINA_PROFILE_CLI=$2
+		profile_cli_flags=(--profile "$2")
+		shift 2
+		;;
+	--profile=*)
+		OPENTINA_PROFILE_CLI=${1#--profile=}
+		if [ -z "$OPENTINA_PROFILE_CLI" ]; then
+			echo "--profile needs a name (buildroot: lite|hmi; ubuntu/debian: lite|desktop; yocto: minimal|qt|hmi)." >&2
+			exit 1
+		fi
+		profile_cli_flags=(--profile "$OPENTINA_PROFILE_CLI")
 		shift
 		;;
 	*)
@@ -65,7 +84,7 @@ fi
 if [ -z "${OPENTINA_SKIP_DOCKER:-}" ] && [ -z "${OPENTINA_IN_DOCKER:-}" ] && [ ! -e /.dockerenv ] &&
 	[ -n "${OPENTINA_DOCKER:-}" ] && [ "${OPENTINA_DOCKER}" != "0" ] &&
 	command -v docker >/dev/null 2>&1; then
-	exec "$OPENTINA_BUILD_ROOT/scripts/docker-exec.sh" "${optee_cli_flags[@]}" "$@"
+	exec "$OPENTINA_BUILD_ROOT/scripts/docker-exec.sh" "${optee_cli_flags[@]}" "${profile_cli_flags[@]}" "$@"
 fi
 
 if [ -n "${OPENTINA_DOCKER:-}" ] && [ "${OPENTINA_DOCKER}" != "0" ] &&
@@ -137,6 +156,15 @@ usage() {
 	echo "    ./build.sh --optee ...           # enable BL32 + kernel driver + TAs"
 	echo "    ./build.sh --no-optee ...        # ATF SPD=none, no BL32 / TAs"
 	echo "    OPENTINA_OPTEE=0 ./build.sh ...  # same as --no-optee (board config may set a default)"
+	echo
+	echo "  Rootfs profile (optional; written before the board name):"
+	echo "    ./build.sh --profile <NAME> <BOARD> [ROOTFS] build"
+	echo "    buildroot: lite (default) | hmi"
+	echo "    ubuntu, debian: lite (default) | desktop"
+	echo "    yocto: minimal (default) | qt | hmi"
+	echo "    openwrt: no profile"
+	echo "    Same names as OPENTINA_BR2_PROFILE / OPENTINA_UBUNTU_PROFILE /"
+	echo "    OPENTINA_DEBIAN_PROFILE / OPENTINA_YOCTO_PROFILE (CLI wins)."
 	echo
 	echo "  ./build.sh targets | list"
 	echo "      List board targets (BOARD_NAME) and root filesystem types"
@@ -219,6 +247,48 @@ fi
 
 export OPENTINA_ROOTFS
 
+# --profile selects the rootfs-specific variable the recipe already reads.
+# OpenWrt has a single config and rejects the flag.
+opentina_apply_rootfs_profile() {
+	local profile="$1"
+	case "$OPENTINA_ROOTFS" in
+	buildroot)
+		case "$profile" in
+		lite | hmi) export OPENTINA_BR2_PROFILE="$profile" ;;
+		*) error "buildroot --profile must be lite or hmi (got: $profile)" ;;
+		esac
+		;;
+	ubuntu)
+		case "$profile" in
+		lite | desktop) export OPENTINA_UBUNTU_PROFILE="$profile" ;;
+		*) error "ubuntu --profile must be lite or desktop (got: $profile)" ;;
+		esac
+		;;
+	debian)
+		case "$profile" in
+		lite | desktop) export OPENTINA_DEBIAN_PROFILE="$profile" ;;
+		*) error "debian --profile must be lite or desktop (got: $profile)" ;;
+		esac
+		;;
+	yocto)
+		case "$profile" in
+		minimal | qt | hmi) export OPENTINA_YOCTO_PROFILE="$profile" ;;
+		*) error "yocto --profile must be minimal, qt or hmi (got: $profile)" ;;
+		esac
+		;;
+	openwrt)
+		error "openwrt has no --profile (got: $profile)"
+		;;
+	*)
+		error "unknown rootfs for --profile: $OPENTINA_ROOTFS"
+		;;
+	esac
+}
+
+if [ -n "${OPENTINA_PROFILE_CLI:-}" ]; then
+	opentina_apply_rootfs_profile "$OPENTINA_PROFILE_CLI"
+fi
+
 opentina_rootfs_component() {
 	case "$OPENTINA_ROOTFS" in
 	ubuntu) printf '%s' ubuntu ;;
@@ -260,6 +330,18 @@ else
 	blue_msg "OP-TEE: disabled (ATF SPD=none, no BL32 / TAs)"
 fi
 
+case "$OPENTINA_ROOTFS" in
+buildroot) OPENTINA_PROFILE="${OPENTINA_BR2_PROFILE:-lite}" ;;
+ubuntu) OPENTINA_PROFILE="${OPENTINA_UBUNTU_PROFILE:-lite}" ;;
+debian) OPENTINA_PROFILE="${OPENTINA_DEBIAN_PROFILE:-lite}" ;;
+yocto) OPENTINA_PROFILE="${OPENTINA_YOCTO_PROFILE:-minimal}" ;;
+*) OPENTINA_PROFILE="" ;;
+esac
+export OPENTINA_PROFILE
+if [ -n "$OPENTINA_PROFILE" ]; then
+	blue_msg "rootfs profile: $OPENTINA_PROFILE ($OPENTINA_ROOTFS)"
+fi
+
 component="$userComponents"
 [ "$component" ] || component="${availableComponents[*]}"
 
@@ -282,7 +364,11 @@ for comp in ${component}; do
 		error "Action \"$action\" for component \"$comp\" isn't defined!"
 	fi
 
-	blue_msg "========== $action component $comp (rootfs=$OPENTINA_ROOTFS) =========="
+	if [ -n "${OPENTINA_PROFILE:-}" ]; then
+		blue_msg "========== $action component $comp (rootfs=$OPENTINA_ROOTFS profile=$OPENTINA_PROFILE) =========="
+	else
+		blue_msg "========== $action component $comp (rootfs=$OPENTINA_ROOTFS) =========="
+	fi
 	"$todo"
 	cd "$OPENTINA_BUILD_ROOT"
 	blue_msg "========== $action component $comp done ========"
