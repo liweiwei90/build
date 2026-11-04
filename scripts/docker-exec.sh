@@ -47,6 +47,10 @@ opentina_docker_opts() {
 		-e "CROSS_COMPILE=${CROSS_COMPILE:-}"
 		-e "OPENTINA_REMOTE_FETCH=${OPENTINA_REMOTE_FETCH:-}"
 		-e "OPENTINA_OPTEE=${OPENTINA_OPTEE:-}"
+		-e "OPENTINA_BR2_PROFILE=${OPENTINA_BR2_PROFILE:-}"
+		-e "OPENTINA_UBUNTU_PROFILE=${OPENTINA_UBUNTU_PROFILE:-}"
+		-e "OPENTINA_DEBIAN_PROFILE=${OPENTINA_DEBIAN_PROFILE:-}"
+		-e "OPENTINA_YOCTO_PROFILE=${OPENTINA_YOCTO_PROFILE:-}"
 		-e "JOBS=${JOBS:-}"
 		-e "TERM=${TERM:-dumb}"
 		# BitBake (and similar) call unshare(CLONE_NEWUSER). Docker's
@@ -61,6 +65,12 @@ opentina_docker_opts() {
 	if [ -d "${HOME}/.ssh" ]; then
 		docker_opts+=( -v "${HOME}/.ssh:${HOME}/.ssh:ro" )
 	fi
+	# HOME is the host path, but that directory is not in the image and
+	# /home is root-owned. ccache writes $HOME/.cache/ccache and otherwise
+	# exits "Permission denied" before the compiler runs.
+	local cache_home="${HOME:-/root}/.cache"
+	mkdir -p "$cache_home"
+	docker_opts+=( -v "${cache_home}:${cache_home}" )
 
 	# Ubuntu/Debian rootfs use host Docker/buildx (same-path repo mount so
 	# buildx -o dest=... and docker -v paths resolve on the daemon).

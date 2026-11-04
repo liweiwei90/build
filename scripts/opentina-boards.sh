@@ -72,6 +72,13 @@ opentina_list_targets() {
 	echo "  ./build.sh --optee <BOARD> build     # BL32 + kernel driver + TAs"
 	echo "  ./build.sh --no-optee <BOARD> build  # ATF SPD=none, no BL32 / TAs"
 	echo "  OPENTINA_OPTEE=0 ./build.sh <BOARD> build"
+	echo
+	blue_msg "Rootfs profile (optional, before the board name):"
+	echo "  ./build.sh --profile <NAME> <BOARD> [ROOTFS] build"
+	echo "  buildroot: lite (default) | hmi"
+	echo "  ubuntu, debian: lite (default) | desktop"
+	echo "  yocto: minimal (default) | qt | hmi"
+	echo "  openwrt: no profile"
 }
 
 # Toolchain: same approach as build2/scripts/build-sdcard-image.sh — one AArch64

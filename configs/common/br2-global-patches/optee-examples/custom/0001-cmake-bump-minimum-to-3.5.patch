@@ -1,0 +1,20 @@
+From: OpenTina <opentina@localhost>
+Subject: [PATCH] cmake: bump cmake_minimum_required to 3.5
+
+Buildroot host-cmake is 4.x, which refuses projects that declare a
+minimum below 3.5. Upstream optee_examples raised this in 4.8.0; keep
+the same one-line fix while we stay on the 4.6.0 pin.
+
+---
+ CMakeLists.txt | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,4 +1,4 @@
+-cmake_minimum_required (VERSION 3.2)
++cmake_minimum_required (VERSION 3.5)
+ project (optee_examples C)
+ 
+ # https://cmake.org/Wiki/CMake_Useful_Variables
