@@ -5,7 +5,7 @@
 #
 # Coverage follows the build-repo PR subset: demo × rootfs/optee, demo
 # buildroot/no-optee, a7a buildroot/optee — plus linux OpenWrt fragments —
-# and, for rootfs repos, every profile.
+# and, for rootfs repos, every profile. Rootfs jobs also pack sdcard.img.
 #
 # Environment (run):
 #   OPENTINA_BUILD_ROOT    Checkout of the build repo
@@ -18,6 +18,8 @@
 #                          yocto minimal|qt|hmi. Empty when the target has none.
 #   OPENTINA_CI_COMPONENTS Words passed to build.sh after `build` (e.g. "br2"
 #                          or "optee atf uboot")
+#   OPENTINA_CI_PACK_IMAGE true: clone the boot chain and also build
+#                          optee/atf/uboot/linux/bootfs/image so sdcard.img exists
 
 set -euo pipefail
 
@@ -67,7 +69,7 @@ a7a = "radxa_a7a"
 boards = [demo, a7a]
 short = {demo: "demo", a7a: "a7a"}
 
-def row(board, rootfs, tee, components, profile="", ccache=True, yocto=False, show_rootfs=False):
+def row(board, rootfs, tee, components, profile="", ccache=True, yocto=False, show_rootfs=False, pack_image=False):
     parts = [short.get(board, board)]
     if show_rootfs:
         parts.append(rootfs)
@@ -84,6 +86,7 @@ def row(board, rootfs, tee, components, profile="", ccache=True, yocto=False, sh
         "components": components,
         "ccache": "true" if ccache else "false",
         "yocto": "true" if yocto else "false",
+        "pack_image": "true" if pack_image else "false",
     }
 
 rows = []
@@ -108,19 +111,19 @@ elif project in ("u-boot", "awbin"):
 elif project == "buildroot":
     for profile in ("lite", "hmi"):
         for board in boards:
-            rows.append(row(board, "buildroot", "optee", "br2", profile))
-        rows.append(row(demo, "buildroot", "no-optee", "br2", profile))
+            rows.append(row(board, "buildroot", "optee", "br2", profile, pack_image=True))
+        rows.append(row(demo, "buildroot", "no-optee", "br2", profile, pack_image=True))
 elif project in ("ubuntu", "debian"):
     for profile in ("lite", "desktop"):
         for board in boards:
-            rows.append(row(board, project, "optee", project, profile, ccache=False))
+            rows.append(row(board, project, "optee", project, profile, ccache=False, pack_image=True))
 elif project == "openwrt":
     for board in boards:
-        rows.append(row(board, "openwrt", "optee", "openwrt"))
+        rows.append(row(board, "openwrt", "optee", "openwrt", pack_image=True))
 elif project == "meta-opentina":
     for profile in ("minimal", "qt", "hmi"):
         for board in boards:
-            rows.append(row(board, "yocto", "optee", "yocto", profile, yocto=True))
+            rows.append(row(board, "yocto", "optee", "yocto", profile, yocto=True, pack_image=True))
 else:
     raise SystemExit(f"ci-firmware-build: no matrix for {project}")
 
@@ -250,5 +253,17 @@ awbin)
 esac
 
 read -r -a comp_args <<< "$components"
+if [ "${OPENTINA_CI_PACK_IMAGE:-}" = true ]; then
+	# PR tree is the rootfs. Boot chain comes from tina-dev so the job can
+	# pack a flashable sdcard.img around that rootfs.
+	for dep in linux u-boot trusted-firmware-a optee_os awbin; do
+		clone_dep "$dep"
+	done
+	if [ "$tee" = optee ]; then
+		comp_args=(optee atf uboot linux "${comp_args[@]}" bootfs image)
+	else
+		comp_args=(atf uboot linux "${comp_args[@]}" bootfs image)
+	fi
+fi
 run_build "$tee_flag" "$board" "$rootfs" build "${comp_args[@]}"
 echo "component ok: $project $board $rootfs $tee ${profile:-default}"

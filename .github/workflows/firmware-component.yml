@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
-# Reusable component CI for firmware and rootfs repos. No sdcard.img.
+# Reusable component CI for firmware and rootfs repos.
 # Called from each source repo's .github/workflows/opentina-firmware.yml.
 # One job per build.sh invocation (board × tee × profile).
+# Rootfs jobs also pack sdcard.img and upload it as an artifact.
 name: OpenTina component
 
 on:
@@ -143,9 +144,49 @@ jobs:
           OPENTINA_CI_TEE: ${{ matrix.tee }}
           OPENTINA_CI_PROFILE: ${{ matrix.profile }}
           OPENTINA_CI_COMPONENTS: ${{ matrix.components }}
+          OPENTINA_CI_PACK_IMAGE: ${{ matrix.pack_image }}
         run: |
           set -euo pipefail
           if [ "${{ matrix.ccache }}" = true ]; then
             export PATH="/usr/lib/ccache:${PATH}"
           fi
           exec "$OPENTINA_BUILD_ROOT/scripts/ci-firmware-build.sh" run "${{ matrix.project }}"
+
+      - name: Stage sdcard image
+        if: matrix.pack_image == 'true'
+        run: |
+          set -euo pipefail
+          src="build/output/${{ matrix.board }}"
+          test -f "$src/sdcard.img"
+          printf '%s\n' "${{ matrix.tee }}" > "$src/OPTEE.txt"
+          (
+            cd "$src"
+            echo "tee=${{ matrix.tee }}"
+            echo "profile=${{ matrix.profile }}"
+            sha256sum sdcard.img
+            for f in u-boot.fex Image.gz rootfs.ext2 tee.bin *.dtb OPTEE.txt; do
+              [ -e "$f" ] || continue
+              sha256sum "$f"
+            done
+          ) | tee "$src/SHA256SUMS"
+          dst="${{ runner.temp }}/image-artifact"
+          mkdir -p "$dst"
+          cp -a "$src/sdcard.img" "$src/SHA256SUMS" "$src/OPTEE.txt" "$dst/"
+          if [ -f "$src/SOURCE_REVS.txt" ]; then
+            cp -a "$src/SOURCE_REVS.txt" "$dst/"
+          fi
+          cp -a "$src/u-boot.fex" "$src/Image.gz" "$dst/"
+          cp -a "$src"/*.dtb "$dst/"
+          if [ "${{ matrix.tee }}" = optee ]; then
+            cp -a "$src/tee.bin" "$dst/"
+          fi
+          ls -lh "$dst/sdcard.img"
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.pack_image == 'true'
+        with:
+          name: ${{ matrix.board }}-${{ matrix.rootfs }}${{ matrix.profile != '' && format('-{0}', matrix.profile) || '' }}-${{ matrix.tee }}
+          path: ${{ runner.temp }}/image-artifact/
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 14
